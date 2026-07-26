@@ -1,0 +1,9 @@
+.venv/
+dist/
+transcriptions/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.omo
+.omo/
+poetry.lock

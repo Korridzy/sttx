@@ -1,0 +1,29 @@
+[project]
+name = "sttx"
+version = "0.1.0"
+description = "Local CPU transcription with Parakeet and sherpa-onnx"
+readme = "README.md"
+authors = [
+    { name = "Korridzy", email = "korridzy@yandex.ru" },
+]
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "sherpa-onnx",
+    "sherpa-onnx-bin",
+    "huggingface-hub",
+    "numpy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require current native packages, models, or network access",
+]
