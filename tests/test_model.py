@@ -22,6 +22,10 @@ PARAKEET_NAMES = (
 )
 ALL_NAMES = (*PARAKEET_NAMES, "silero_vad.onnx")
 REPO_ID = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+SILERO_RELEASE_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "silero_vad.onnx"
+)
 
 
 def model_module():
@@ -564,3 +568,4 @@ def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
     source = inspect.getsource(model)
     assert "revision=" not in source
     assert "sha256" not in source.lower()
+    assert model.SILERO_URL == SILERO_RELEASE_URL

@@ -27,7 +27,8 @@ PARAKEET_FILENAMES: Final = (
 )
 SILERO_FILENAME: Final = "silero_vad.onnx"
 SILERO_URL: Final = (
-    "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx"
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "silero_vad.onnx"
 )
 DOWNLOAD_TIMEOUT_SECONDS: Final = 60.0
 
