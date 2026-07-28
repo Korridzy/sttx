@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import multiprocessing
+import queue
 import shutil
 import tempfile
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -40,10 +42,13 @@ class SnapshotDownloader(Protocol):
         repo_id: str,
         allow_patterns: list[str],
         local_files_only: bool,
+        cache_dir: Path | None,
     ) -> str: ...
 
 
 SileroDownloader = Callable[[Path], None]
+type BundleWire = tuple[str, str, str, str, str]
+type BundleMessage = tuple[str, BundleWire] | tuple[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,12 +80,14 @@ def resolve_bundle(
         return _bundle_from_directory(model_dir, include_silero=True)
 
     download_snapshot = _snapshot_download or _download_snapshot
+    cache_dir = _hf_cache_dir()
     try:
         local_snapshot = Path(
             download_snapshot(
                 repo_id=PARAKEET_REPO_ID,
                 allow_patterns=list(PARAKEET_FILENAMES),
                 local_files_only=True,
+                cache_dir=cache_dir,
             )
         )
         parakeet = _bundle_from_directory(local_snapshot, include_silero=False)
@@ -95,6 +102,7 @@ def resolve_bundle(
                     repo_id=PARAKEET_REPO_ID,
                     allow_patterns=list(PARAKEET_FILENAMES),
                     local_files_only=False,
+                    cache_dir=cache_dir,
                 )
             )
         except (HfHubHTTPError, OSError) as error:
@@ -111,13 +119,55 @@ def resolve_bundle(
         silero_path,
         _silero_downloader or _download_silero,
     )
-    return ModelBundle(
-        encoder=parakeet.encoder,
-        decoder=parakeet.decoder,
-        joiner=parakeet.joiner,
-        tokens=parakeet.tokens,
-        silero=silero,
-    )
+    return replace(parakeet, silero=silero)
+
+
+def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
+    if model_dir is not None:
+        return resolve_bundle(model_dir)
+    context = multiprocessing.get_context("spawn")
+    messages: multiprocessing.queues.Queue[BundleMessage] = context.Queue()
+    process = context.Process(target=_resolve_bundle_worker, args=(messages,))
+    process.start()
+    try:
+        while process.is_alive():
+            try:
+                return _bundle_from_message(messages.get(timeout=0.1))
+            except queue.Empty:
+                pass
+        try:
+            return _bundle_from_message(messages.get_nowait())
+        except queue.Empty as error:
+            raise ModelEnvironmentError(
+                path=Path(PARAKEET_REPO_ID),
+                reason=f"model acquisition process exited {process.exitcode}",
+            ) from error
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        messages.close()
+
+
+def _resolve_bundle_worker(messages: multiprocessing.queues.Queue[BundleMessage]) -> None:
+    try:
+        bundle = resolve_bundle()
+    except ModelEnvironmentError as error:
+        messages.put(("error", str(error)))
+        return
+    paths = (bundle.encoder, bundle.decoder, bundle.joiner, bundle.tokens, bundle.silero)
+    messages.put(("ok", tuple(str(path) for path in paths)))
+
+
+def _bundle_from_message(message: BundleMessage) -> ModelBundle:
+    match message:
+        case ("ok", (encoder, decoder, joiner, tokens, silero)):
+            return ModelBundle(Path(encoder), Path(decoder), Path(joiner), Path(tokens), Path(silero))
+        case ("error", reason):
+            raise ModelEnvironmentError(path=Path(PARAKEET_REPO_ID), reason=reason)
 
 
 def _download_snapshot(
@@ -125,11 +175,13 @@ def _download_snapshot(
     repo_id: str,
     allow_patterns: list[str],
     local_files_only: bool,
+    cache_dir: Path | None,
 ) -> str:
     result = snapshot_download(
         repo_id=repo_id,
         allow_patterns=allow_patterns,
         local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
     if isinstance(result, str):
         return result
@@ -137,6 +189,10 @@ def _download_snapshot(
         path=Path(repo_id),
         reason="Hugging Face returned download metadata instead of a snapshot",
     )
+
+
+def _hf_cache_dir() -> Path | None:
+    return Path(raw_cache) if (raw_cache := os.environ.get("HF_HUB_CACHE")) else None
 
 
 def _bundle_from_directory(directory: Path, *, include_silero: bool) -> ModelBundle:

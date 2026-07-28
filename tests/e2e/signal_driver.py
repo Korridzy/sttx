@@ -111,7 +111,9 @@ def _resolve_for_phase(phase: str, root: Path, ready: Path) -> ModelBundle:
             repo_id: str,
             allow_patterns: list[str],
             local_files_only: bool,
+            cache_dir: Path | None,
         ) -> str:
+            assert cache_dir is None or cache_dir.is_absolute()
             del repo_id, allow_patterns
             if local_files_only:
                 return str(root / "missing-snapshot")

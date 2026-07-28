@@ -24,6 +24,8 @@ type FloatSamples = NDArray[np.float32]
 
 
 class RecognitionStream(Protocol):
+    result: RecognitionResult
+
     def accept_waveform(
         self,
         sample_rate: int,
@@ -46,8 +48,6 @@ class Recognizer[StreamT: RecognitionStream, ResultT: RecognitionResult](
 
     def decode_stream(self, stream: StreamT) -> None: ...
 
-    def get_result(self, stream: StreamT) -> ResultT: ...
-
 
 class VadSegment(Protocol):
     start: int
@@ -59,7 +59,7 @@ class VoiceActivityDetector(Protocol):
 
     def flush(self) -> None: ...
 
-    def is_empty(self) -> bool: ...
+    def empty(self) -> bool: ...
 
     @property
     def front(self) -> VadSegment: ...
@@ -131,7 +131,7 @@ def _drain_vad[StreamT: RecognitionStream, ResultT: RecognitionResult](
     wav_sample_count: int,
     state: _PipelineState,
 ) -> None:
-    while not vad.is_empty():
+    while not vad.empty():
         segment = vad.front
         _decode_segment(segment, recognizer, wav_sample_count, state)
         vad.pop()
@@ -150,7 +150,7 @@ def _decode_segment[StreamT: RecognitionStream, ResultT: RecognitionResult](
         stream = recognizer.create_stream()
         stream.accept_waveform(SAMPLE_RATE, chunk)
         recognizer.decode_stream(stream)
-        result = recognizer.get_result(stream)
+        result = stream.result
         if not state.language and result.lang.strip():
             state.language = result.lang.strip()
         offset = (segment.start + split_start) / SAMPLE_RATE

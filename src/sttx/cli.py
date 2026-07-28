@@ -17,7 +17,11 @@ import sherpa_onnx
 from sttx import __version__
 from sttx.asr import TranscriptionError, transcribe
 from sttx.audio import AudioEnvironmentError, PreparedAudio, normalize_media
-from sttx.model import ModelBundle, ModelEnvironmentError, resolve_bundle
+from sttx.model import (
+    ModelBundle,
+    ModelEnvironmentError,
+    resolve_bundle_cancellable,
+)
 from sttx.output import (
     OutputPathError,
     OutputPaths,
@@ -91,7 +95,7 @@ def run[RecognizerT, VadT](
     argv: Sequence[str] | None = None,
     *,
     _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
-    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle,
+    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle_cancellable,
     _make_recognizer: RecognizerFactory[RecognizerT] | None = None,
     _make_vad: VadFactory[VadT] | None = None,
     _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
@@ -140,7 +144,7 @@ def _run[RecognizerT, VadT](
     argv: Sequence[str] | None = None,
     *,
     _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
-    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle,
+    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle_cancellable,
     _make_recognizer: RecognizerFactory[RecognizerT] | None = None,
     _make_vad: VadFactory[VadT] | None = None,
     _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
@@ -245,7 +249,7 @@ def _make_vad_from_bundle(
                 min_silence_duration=0.5,
                 min_speech_duration=0.25,
                 window_size=512,
-                max_speech_duration=20,
+                max_speech_duration=60,
             ),
             sample_rate=SAMPLE_RATE,
             num_threads=1,

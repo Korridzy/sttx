@@ -47,7 +47,7 @@ class FakeVad:
         self.flushed = True
         self.ready.extend(self.pending)
 
-    def is_empty(self) -> bool:
+    def empty(self) -> bool:
         return not self.ready
 
     @property
@@ -61,6 +61,7 @@ class FakeVad:
 @dataclass(slots=True)  # noqa: MUTABLE_OK
 class FakeStream:
     samples: FloatSamples | None = None
+    result: FakeResult | None = None
 
     def accept_waveform(self, sample_rate: int, samples: FloatSamples) -> None:
         assert sample_rate == SAMPLE_RATE
@@ -78,10 +79,7 @@ class FakeRecognizer:
     def decode_stream(self, stream: FakeStream) -> None:
         assert stream.samples is not None
         self.chunk_lengths.append(len(stream.samples))
-
-    def get_result(self, stream: FakeStream) -> FakeResult:
-        assert stream.samples is not None
-        return self.results.pop(0)
+        stream.result = self.results.pop(0)
 
 
 def _prepared_wav(tmp_path: Path, sample_count: int) -> PreparedAudio:
