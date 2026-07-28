@@ -1,8 +1,179 @@
 # sttx
 
-`sttx` is a standalone Linux CPU transcription prototype built around
-sherpa-onnx and NVIDIA Parakeet TDT 0.6b v3.
+`sttx` is a standalone Linux CPU transcription command. It normalizes one
+audio/video file with `ffmpeg`, runs NVIDIA Parakeet TDT 0.6B v3 through the
+`sherpa-onnx` Python bindings, and writes timestamped JSON and plain text
+transcripts.
 
-The repository currently contains the Poetry project boundary and the accepted
-product specification. The command-line implementation is added in later
-development tasks.
+## Installation
+
+### Prerequisite
+
+Install `ffmpeg` separately and make sure it is available on `PATH`. The
+application invokes it for every input, including WAV files that already have
+the target format.
+
+### Install the built wheel
+
+The package produces a pure-Python wheel. Build it with Poetry, then install
+that wheel into the target environment:
+
+```bash
+poetry build
+python -m venv .venv-sttx
+. .venv-sttx/bin/activate
+python -m pip install dist/sttx-0.1.0-py3-none-any.whl
+sttx --version
+deactivate
+```
+
+The wheel installs the `sttx` console command and its runtime dependencies.
+
+### Development environment
+
+This repository keeps Poetry's virtual environment in `.venv/`:
+
+```bash
+poetry install
+poetry env info --path
+poetry check
+poetry run pytest
+poetry run python -m compileall -q src tests
+poetry run sttx --help
+poetry run sttx --version
+poetry build
+```
+
+## Quickstart
+
+```bash
+poetry run sttx recording.mp4
+```
+
+The default output directory is `./transcriptions`. For `recording.mp4`, a
+successful run prints these two paths to stdout and writes both files:
+
+```text
+transcriptions/recording.json
+transcriptions/recording.txt
+```
+
+Existing output files are replaced atomically.
+
+## Command-line interface
+
+The complete public surface is:
+
+```text
+sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v] [--version] media
+```
+
+- `media` — required positional path to one local audio/video file.
+- `-h`, `--help` — show usage and exit.
+- `-o OUTPUT`, `--output OUTPUT` — output filename stem. The program adds
+  `.json` and `.txt`; a path or an existing suffix is rejected.
+- `-d OUTDIR`, `--outdir OUTDIR` — output directory. Relative paths are
+  resolved from the current directory; the default is `./transcriptions`.
+- `--model-dir MODEL_DIR` — use a local, offline model bundle instead of
+  acquiring model assets.
+- `-v`, `--verbose` — write a completion line with duration and real-time
+  factor to stderr.
+- `--version` — print `sttx 0.1.0` and exit.
+
+There is no language option: the model reports a language when available and
+the JSON writer falls back to `"auto"`.
+
+## Streams and exit codes
+
+On a successful transcription, stdout contains exactly two newline-separated
+paths, JSON first and TXT second. The application writes diagnostics to
+stderr: argument usage/errors, environment or runtime errors, the no-speech
+warning, and the optional verbose completion line. `--help` and `--version`
+are the usual argparse exceptions: their informational text is printed to
+stdout and they exit successfully.
+
+The process exits with:
+
+- `0` — transcription completed, including a silence/no-speech input.
+- `1` — input or environment failure (for example an unreadable file,
+  unavailable `ffmpeg`, missing model asset, or output filesystem failure).
+- `2` — argument/usage failure or transcription/decode failure.
+- `130` — clean cancellation after SIGINT.
+- `143` — clean cancellation after SIGTERM.
+
+Errors are emitted on stderr with an `error:` prefix. A cancellation also
+prints a short cancellation diagnostic on stderr. Temporary normalized audio is
+removed during success, failure, and signal cleanup.
+
+## Model acquisition and cache
+
+Without `--model-dir`, the first run resolves the floating repository
+`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` and downloads its
+missing Parakeet assets into the Hugging Face cache. The Silero VAD asset is
+stored in the local `sttx` cache. Model revision and download size are not
+fixed promises and may change over time.
+
+Warm-cache behavior is sticky and local-only first: an existing complete local
+snapshot is used without a refresh request. Network acquisition is attempted
+only when the local snapshot is missing or incomplete. The Silero VAD file is
+also reused from its local `sttx` cache once present; it is not refreshed on a
+normal warm run.
+
+For an offline run, `--model-dir` must point to a flat directory containing the
+complete five-file bundle below. These exact filenames are required and each
+file must be readable and non-empty; extra files are not consumed:
+
+```text
+encoder.int8.onnx
+decoder.int8.onnx
+joiner.int8.onnx
+tokens.txt
+silero_vad.onnx
+```
+
+## Output files
+
+The JSON file is UTF-8, uses two-space indentation, and keeps non-ASCII text
+unescaped. Its `text` field is the segment text joined with single spaces.
+`duration`, `start`, and `end` are rounded to two decimal places; segment IDs
+start at zero.
+
+For example, one short transcript may be:
+
+```json
+{
+  "task": "transcribe",
+  "language": "auto",
+  "duration": 3.2,
+  "text": "Hello world.",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 3.2,
+      "text": "Hello world."
+    }
+  ]
+}
+```
+
+The matching TXT file contains exactly the value of JSON `text`, with no
+additional newline or other bytes:
+
+```text
+Hello world.
+```
+
+Silence/no speech is a successful result with `text: ""`, an empty
+`segments` array, and `warning: no speech detected` on stderr.
+
+## VPS note
+
+This README records the local CLI contract only. VPS installation and
+deployment automation are deferred and out of scope for this milestone.
+
+## Attribution and licensing
+
+See [NOTICE.md](NOTICE.md) for third-party attribution and primary upstream
+license links. The `sttx` project itself makes no license grant; this repository
+does not include a project license file.
