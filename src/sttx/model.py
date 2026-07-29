@@ -8,8 +8,9 @@ import tempfile
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from multiprocessing.queues import Queue
 from pathlib import Path
-from typing import Final, Protocol, TypeAlias
+from typing import Final, Literal, Protocol, TypeAlias, assert_never
 
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import (
@@ -48,7 +49,9 @@ class SnapshotDownloader(Protocol):
 
 SileroDownloader = Callable[[Path], None]
 BundleWire: TypeAlias = tuple[str, str, str, str, str]
-BundleMessage: TypeAlias = tuple[str, BundleWire] | tuple[str, str]
+BundleMessage: TypeAlias = (
+    tuple[Literal["ok"], BundleWire] | tuple[Literal["error"], str]
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +129,7 @@ def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
     if model_dir is not None:
         return resolve_bundle(model_dir)
     context = multiprocessing.get_context("spawn")
-    messages: multiprocessing.queues.Queue[BundleMessage] = context.Queue()
+    messages: Queue[BundleMessage] = context.Queue()
     process = context.Process(target=_resolve_bundle_worker, args=(messages,))
     process.start()
     try:
@@ -152,14 +155,20 @@ def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
         messages.close()
 
 
-def _resolve_bundle_worker(messages: multiprocessing.queues.Queue[BundleMessage]) -> None:
+def _resolve_bundle_worker(messages: Queue[BundleMessage]) -> None:
     try:
         bundle = resolve_bundle()
     except ModelEnvironmentError as error:
         messages.put(("error", str(error)))
         return
-    paths = (bundle.encoder, bundle.decoder, bundle.joiner, bundle.tokens, bundle.silero)
-    messages.put(("ok", tuple(str(path) for path in paths)))
+    paths: BundleWire = (
+        str(bundle.encoder),
+        str(bundle.decoder),
+        str(bundle.joiner),
+        str(bundle.tokens),
+        str(bundle.silero),
+    )
+    messages.put(("ok", paths))
 
 
 def _bundle_from_message(message: BundleMessage) -> ModelBundle:
@@ -168,6 +177,8 @@ def _bundle_from_message(message: BundleMessage) -> ModelBundle:
             return ModelBundle(Path(encoder), Path(decoder), Path(joiner), Path(tokens), Path(silero))
         case ("error", reason):
             raise ModelEnvironmentError(path=Path(PARAKEET_REPO_ID), reason=reason)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _download_snapshot(
