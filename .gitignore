@@ -7,3 +7,4 @@ __pycache__/
 .omo
 .omo/
 poetry.lock
+.serena/
