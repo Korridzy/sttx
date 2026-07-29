@@ -205,12 +205,11 @@ def test_stdout_contains_only_final_paths(
         _cwd=tmp_path,
     )
 
-    # Then: stdout contains exactly the final artifact paths and progress stays on stderr.
+    # Then: stdout contains exactly the final artifact paths and stderr stays quiet.
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
-    assert "rtf=" in captured.err
-    assert "complete" in captured.err
+    assert captured.err == ""
     assert events == [
         f"paths:{media.name}:{tmp_path}:episode:{tmp_path}",
         f"normalize:{media.name}",
@@ -222,6 +221,40 @@ def test_stdout_contains_only_final_paths(
     ]
     assert prepared.cleanup_seen_after_transcription is False
     assert prepared.cleaned is True
+
+
+def test_verbose_prints_progress_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a successful injected run with verbose output requested.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    # When: verbose mode is enabled.
+    exit_code = run(
+        [str(media), "--verbose", "--model-dir", str(tmp_path)],
+        _normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
+        _make_vad=lambda model_bundle: FakeVad(model_bundle),
+        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: final paths remain on stdout while progress uses stderr.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "complete duration=1.25s rtf=" in captured.err
 
 
 def test_run_validates_input_and_output_before_bundle_acquisition(

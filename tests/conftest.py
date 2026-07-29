@@ -26,6 +26,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="write integration identity evidence to this JSON path",
     )
+    parser.addoption(
+        "--abstractor-baseline",
+        type=Path,
+        default=None,
+        help="path to the abstractor baseline JSON artifact",
+    )
+    parser.addoption(
+        "--abstractor-baseline-sha256",
+        type=str,
+        default=None,
+        help="expected SHA-256 digest for the abstractor baseline artifact",
+    )
 
 
 @pytest.fixture

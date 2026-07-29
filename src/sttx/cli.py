@@ -163,6 +163,7 @@ def _run[RecognizerT, VadT](
     output = namespace.output
     outdir = namespace.outdir
     model_dir = namespace.model_dir
+    verbose = namespace.verbose
 
     try:
         _validate_input(media)
@@ -197,7 +198,8 @@ def _run[RecognizerT, VadT](
 
     if not transcript.segments:
         print("warning: no speech detected", file=sys.stderr)
-    _print_progress(transcript, started)
+    if verbose:
+        _print_progress(transcript, started)
     print(paths.json_path)
     print(paths.txt_path)
     return SUCCESS
