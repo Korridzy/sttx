@@ -4,7 +4,7 @@ import math
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Final, Protocol, TypeAlias, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -20,7 +20,7 @@ CONTROL_TOKENS: Final = frozenset(
 SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
 
-type FloatSamples = NDArray[np.float32]
+FloatSamples: TypeAlias = NDArray[np.float32]
 
 
 class RecognitionStream(Protocol):
@@ -41,9 +41,11 @@ class RecognitionResult(Protocol):
     lang: str
 
 
-class Recognizer[StreamT: RecognitionStream, ResultT: RecognitionResult](
-    Protocol
-):
+StreamT = TypeVar("StreamT", bound=RecognitionStream)
+ResultT = TypeVar("ResultT", bound=RecognitionResult)
+
+
+class Recognizer(Protocol[StreamT, ResultT]):
     def create_stream(self) -> StreamT: ...
 
     def decode_stream(self, stream: StreamT) -> None: ...
@@ -88,7 +90,7 @@ class _PipelineState:
     language: str = ""
 
 
-def transcribe[StreamT: RecognitionStream, ResultT: RecognitionResult](
+def transcribe(
     audio: PreparedAudio,
     *,
     recognizer: Recognizer[StreamT, ResultT],
@@ -125,7 +127,7 @@ def _read_samples(audio: PreparedAudio) -> FloatSamples:
     return samples.astype(np.float32) / 32768.0
 
 
-def _drain_vad[StreamT: RecognitionStream, ResultT: RecognitionResult](
+def _drain_vad(
     vad: VoiceActivityDetector,
     recognizer: Recognizer[StreamT, ResultT],
     wav_sample_count: int,
@@ -137,7 +139,7 @@ def _drain_vad[StreamT: RecognitionStream, ResultT: RecognitionResult](
         vad.pop()
 
 
-def _decode_segment[StreamT: RecognitionStream, ResultT: RecognitionResult](
+def _decode_segment(
     segment: VadSegment,
     recognizer: Recognizer[StreamT, ResultT],
     wav_sample_count: int,

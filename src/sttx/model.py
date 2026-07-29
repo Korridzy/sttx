@@ -9,7 +9,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, TypeAlias
 
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import (
@@ -47,8 +47,8 @@ class SnapshotDownloader(Protocol):
 
 
 SileroDownloader = Callable[[Path], None]
-type BundleWire = tuple[str, str, str, str, str]
-type BundleMessage = tuple[str, BundleWire] | tuple[str, str]
+BundleWire: TypeAlias = tuple[str, str, str, str, str]
+BundleMessage: TypeAlias = tuple[str, BundleWire] | tuple[str, str]
 
 
 @dataclass(frozen=True, slots=True)

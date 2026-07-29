@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 import sherpa_onnx
 
@@ -35,17 +35,19 @@ SUCCESS: int = 0
 ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
+RecognizerT = TypeVar("RecognizerT")
+VadT = TypeVar("VadT")
 
 
-class RecognizerFactory[RecognizerT](Protocol):
+class RecognizerFactory(Protocol[RecognizerT]):
     def __call__(self, bundle: ModelBundle) -> RecognizerT: ...
 
 
-class VadFactory[VadT](Protocol):
+class VadFactory(Protocol[VadT]):
     def __call__(self, bundle: ModelBundle) -> VadT: ...
 
 
-class TranscribeFn[RecognizerT, VadT](Protocol):
+class TranscribeFn(Protocol[RecognizerT, VadT]):
     def __call__(
         self,
         audio: PreparedAudio,
@@ -91,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run[RecognizerT, VadT](
+def run(
     argv: Sequence[str] | None = None,
     *,
     _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
@@ -140,7 +142,7 @@ def run[RecognizerT, VadT](
             signal.signal(signum, handler)
 
 
-def _run[RecognizerT, VadT](
+def _run(
     argv: Sequence[str] | None = None,
     *,
     _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
