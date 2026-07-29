@@ -92,6 +92,9 @@ def normalize_media(input_path: Path) -> PreparedAudio:
         except KeyboardInterrupt as error:
             _stop_process_group(process)
             raise AudioCancellationError(path=input_path) from error
+        except BaseException:  # noqa: BROAD_EXCEPT_OK
+            _stop_process_group(process)
+            raise
 
         if process.returncode != 0:
             detail = stderr.decode(errors="replace").strip()
@@ -148,6 +151,7 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         process_group = os.getpgid(process.pid)
     except ProcessLookupError:
+        process.wait()
         return
     try:
         os.killpg(process_group, signal.SIGTERM)
@@ -156,10 +160,10 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
         try:
             os.killpg(process_group, signal.SIGKILL)
         except ProcessLookupError:
-            return
+            pass
         process.wait(timeout=PROCESS_STOP_TIMEOUT)
     except ProcessLookupError:
-        return
+        process.wait()
 
 
 def _validated_sample_count(temp_path: Path, input_path: Path) -> int:

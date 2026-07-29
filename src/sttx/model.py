@@ -197,7 +197,6 @@ def _resolve_silero(
         ) from error
 
     staging = Path(raw_staging)
-    promoted = False
     try:
         downloader(staging)
         with staging.open("rb+") as staged_file:
@@ -205,7 +204,6 @@ def _resolve_silero(
             os.fsync(staged_file.fileno())
         _require_asset(staging)
         os.replace(staging, final_path)
-        promoted = True
         return _require_asset(final_path)
     except OSError as error:
         raise ModelEnvironmentError(
@@ -213,14 +211,13 @@ def _resolve_silero(
             reason=f"Silero acquisition failed: {error}",
         ) from error
     finally:
-        if not promoted:
-            try:
-                staging.unlink(missing_ok=True)
-            except OSError as error:
-                raise ModelEnvironmentError(
-                    path=staging,
-                    reason=f"cannot clean Silero staging file: {error}",
-                ) from error
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError as error:
+            raise ModelEnvironmentError(
+                path=staging,
+                reason=f"cannot clean Silero staging file: {error}",
+            ) from error
 
 
 def _download_silero(destination: Path) -> None:

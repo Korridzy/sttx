@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import Protocol
 
 import sherpa_onnx
@@ -56,6 +59,14 @@ class CliRuntimeError(Exception):
         return self.reason
 
 
+@dataclass(frozen=True, slots=True)
+class ShutdownRequested(BaseException):
+    signum: int
+
+    def __str__(self) -> str:
+        return f"cancelled by {signal.Signals(self.signum).name}"
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise CliRuntimeError(f"{self.prog}: error: {message}")
@@ -77,6 +88,55 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run[RecognizerT, VadT](
+    argv: Sequence[str] | None = None,
+    *,
+    _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
+    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle,
+    _make_recognizer: RecognizerFactory[RecognizerT] | None = None,
+    _make_vad: VadFactory[VadT] | None = None,
+    _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
+    _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
+    _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
+    _cwd: Path | None = None,
+) -> int:
+    previous_handlers: dict[
+        int,
+        int | Callable[[int, FrameType | None], None] | None,
+    ] = {}
+    install_handlers = threading.current_thread() is threading.main_thread()
+    shutdown_signum: int | None = None
+
+    def request_shutdown(signum: int, frame: FrameType | None) -> None:
+        nonlocal shutdown_signum
+        del frame
+        if shutdown_signum is None:
+            shutdown_signum = signum
+            raise ShutdownRequested(signum)
+
+    try:
+        if install_handlers:
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.signal(signum, request_shutdown)
+        return _run(
+            argv,
+            _normalize_media=_normalize_media,
+            _resolve_bundle=_resolve_bundle,
+            _make_recognizer=_make_recognizer,
+            _make_vad=_make_vad,
+            _transcribe=_transcribe,
+            _output_paths=_output_paths,
+            _write_outputs=_write_outputs,
+            _cwd=_cwd,
+        )
+    except ShutdownRequested as error:
+        _print_error(error)
+        return 128 + error.signum
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
+def _run[RecognizerT, VadT](
     argv: Sequence[str] | None = None,
     *,
     _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
