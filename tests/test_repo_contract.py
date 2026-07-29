@@ -30,6 +30,7 @@ SUBJECTS = {
     "docs(sttx): document installation usage and attribution",
     "build(sttx): prove the distributable command across supported Python",
     "chore(sttx): enforce the local-only repository contract",
+    "fix(types): keep final review boundaries sound",
 }
 CORRECTIVE_SUBJECT = re.compile(r"fix\([a-z]+\): close task (?:[1-9]|1[0-3]) verification gap\Z")
 TRAILER_ORDER = (
