@@ -6,5 +6,7 @@ __pycache__/
 .pytest_cache/
 .omo
 .omo/
+.omc
+range
 poetry.lock
 .serena/
