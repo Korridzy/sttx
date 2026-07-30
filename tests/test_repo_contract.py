@@ -13,9 +13,7 @@ from repo_snapshot import canonical_snapshot
 
 REPOSITORY = Path(__file__).parents[1]
 ABSTRACTOR = Path("abstractor")
-SOURCE_SPEC = ABSTRACTOR / ".omo/specs/deep-interview-sttx-python-transcriber.md"
-COPIED_SPEC = REPOSITORY / "doc/specs/deep-interview-sttx.md"
-AUTHOR = ("Korridzy", "korridzy@yandex.ru")
+AUTHOR = ("Korridzy", "Korridzy@yandex.ru")
 SUBJECTS = {
     "chore(sttx): establish the standalone project boundary",
     "feat(output): make transcript artifacts deterministic",
@@ -51,7 +49,6 @@ REQUIRED_FILES = frozenset(
         "NOTICE.md",
         "poetry.toml",
         "pyproject.toml",
-        "doc/specs/deep-interview-sttx.md",
         "src/sttx/__init__.py",
         "src/sttx/asr.py",
         "src/sttx/audio.py",
@@ -63,7 +60,15 @@ REQUIRED_FILES = frozenset(
         "tests/test_packaging.py",
     }
 )
-FORBIDDEN_PREFIXES = (".github/", "deploy/", "deployment/", "infra/", "models/", "evidence/")
+FORBIDDEN_PREFIXES = (
+    ".github/",
+    "deploy/",
+    "deployment/",
+    "doc/",
+    "infra/",
+    "models/",
+    "evidence/",
+)
 FORBIDDEN_NAMES = frozenset(
     {
         "poetry.lock",
@@ -150,7 +155,6 @@ def test_abstractor_matches_the_immutable_baseline(request: pytest.FixtureReques
 
 
 def test_repository_layout_matches_the_approved_boundary() -> None:
-    assert SOURCE_SPEC.read_bytes() == COPIED_SPEC.read_bytes()
     tracked = tracked_files(REPOSITORY)
     assert REQUIRED_FILES <= tracked
     forbidden = sorted(
