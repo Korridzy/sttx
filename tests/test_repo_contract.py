@@ -22,6 +22,8 @@ SUBJECTS = {
     "test(cli): lock offline media and error behavior",
     "test(integration): prove the floating local transcription pipeline",
     "docs(sttx): document installation usage and attribution",
+    "build(sttx): package Apache-2.0 licensing",
+    "docs(sttx): document Apache-2.0 licensing",
     "build(sttx): prove the distributable command across supported Python",
     "chore(sttx): enforce the local-only repository contract",
     "fix(types): keep final review boundaries sound",
@@ -41,6 +43,7 @@ OPTIONAL_TRAILERS = frozenset({"Rejected", "Directive"})
 REQUIRED_FILES = frozenset(
     {
         ".gitignore",
+        "LICENSE",
         "README.md",
         "NOTICE.md",
         "poetry.toml",

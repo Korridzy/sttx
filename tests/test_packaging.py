@@ -25,6 +25,7 @@ EXPECTED_METADATA = {
     f"{DIST_INFO}/METADATA",
     f"{DIST_INFO}/WHEEL",
     f"{DIST_INFO}/entry_points.txt",
+    f"{DIST_INFO}/licenses/LICENSE",
     f"{DIST_INFO}/licenses/NOTICE.md",
     f"{DIST_INFO}/RECORD",
 }
@@ -167,6 +168,8 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert package_metadata["Name"] == "sttx"
     assert package_metadata["Version"] == "0.1.0"
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
+    assert package_metadata["License-Expression"] == "Apache-2.0"
+    assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
     assert sorted(package_metadata.get_all("Requires-Dist")) == [
         "huggingface-hub",
         "numpy",
