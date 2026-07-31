@@ -167,11 +167,6 @@ Hello world.
 Silence/no speech is a successful result with `text: ""`, an empty
 `segments` array, and `warning: no speech detected` on stderr.
 
-## VPS note
-
-This README records the local CLI contract only. VPS installation and
-deployment automation are deferred and out of scope for this milestone.
-
 ## Attribution and licensing
 
 `sttx` source code is licensed under the [Apache License 2.0](LICENSE).
