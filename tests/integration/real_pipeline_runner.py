@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from real_pipeline_artifacts import JsonValue
 
-STTX_BIN: Final = Path(".venv/bin/sttx")
+STTX_BIN: Final = Path(sys.executable).with_name("sttx")
 ENV_UNSET: Final = (
     "HUGGINGFACE_HUB_CACHE",
     "HUGGINGFACE_ASSETS_CACHE",

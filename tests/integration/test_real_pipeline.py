@@ -47,7 +47,7 @@ def test_real_floating_pipeline_gate(
     monkeypatch: pytest.MonkeyPatch,
     identity_output: Path | None,
 ) -> None:
-    artifacts = task_artifacts(identity_output)
+    artifacts = task_artifacts(identity_output, tmp_path)
     append_log(artifacts.log, "WORKING: Todo 10 real pipeline - cold acquisition")
     cold = sanitized_env(tmp_path / "cold")
     _apply_env(monkeypatch, cold.values)

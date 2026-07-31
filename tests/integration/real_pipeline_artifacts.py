@@ -52,10 +52,8 @@ class TaskArtifacts:
     done_claim: Path
 
 
-def task_artifacts(identity_output: Path | None) -> TaskArtifacts:
-    identity = identity_output or Path(
-        "task-10-sttx-python-transcriber.json"
-    )
+def task_artifacts(identity_output: Path | None, fallback_root: Path) -> TaskArtifacts:
+    identity = identity_output or fallback_root / "task-10-sttx-python-transcriber.json"
     root = identity.parent
     root.mkdir(parents=True, exist_ok=True)
     return TaskArtifacts(
@@ -138,7 +136,7 @@ def environment_identity() -> dict[str, JsonValue]:
         "tools": {
             "poetry": command_version(("poetry", "--version")),
             "ffmpeg": command_version(("ffmpeg", "-version")),
-            "sttx": command_version((".venv/bin/sttx", "--version")),
+            "sttx": command_version((str(Path(sys.executable).with_name("sttx")), "--version")),
         },
         "packages": packages,
     }
