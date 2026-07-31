@@ -82,7 +82,7 @@ def install_successful_popen(
         return process
 
     monkeypatch.setattr(subprocess, "Popen", start)
-    monkeypatch.setattr(shutil, "which", lambda command: f"{command}")
+    monkeypatch.setattr(shutil, "which", lambda _command: "ffmpeg")
 
 
 def test_ffmpeg_argv_is_16k_mono_pcm(
