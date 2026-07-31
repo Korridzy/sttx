@@ -1,8 +1,8 @@
 # Third-Party Notices
 
 `sttx` combines the following upstream software, model, and model-conversion
-artifacts. Their terms remain separate from the `sttx` project, which makes no
-license grant of its own.
+artifacts. Their terms remain separate from the Apache-2.0 license that applies
+to `sttx` source code.
 
 ## sherpa-onnx
 

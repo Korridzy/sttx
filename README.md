@@ -174,6 +174,6 @@ deployment automation are deferred and out of scope for this milestone.
 
 ## Attribution and licensing
 
-See [NOTICE.md](NOTICE.md) for third-party attribution and primary upstream
-license links. The `sttx` project itself makes no license grant; this repository
-does not include a project license file.
+`sttx` source code is licensed under the [Apache License 2.0](LICENSE).
+Third-party software and model assets remain subject to their own terms; see
+[NOTICE.md](NOTICE.md) for attribution and primary upstream license links.
