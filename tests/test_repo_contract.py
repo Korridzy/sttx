@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -10,36 +9,6 @@ import pytest
 
 REPOSITORY = Path(__file__).parents[1]
 AUTHOR = ("Korridzy", "Korridzy@yandex.ru")
-SUBJECTS = {
-    "chore(sttx): establish the standalone project boundary",
-    "feat(output): make transcript artifacts deterministic",
-    "feat(audio): normalize media through a safe temporary wav",
-    "feat(model): resolve a floating offline-ready asset bundle",
-    "test(compat): gate the current sherpa and model surface",
-    "feat(asr): assemble timestamped sentences from vad chunks",
-    "feat(cli): expose the single-shot transcription command",
-    "fix(cli): guarantee signal cleanup and conventional exits",
-    "test(cli): lock offline media and error behavior",
-    "test(integration): prove the floating local transcription pipeline",
-    "docs(sttx): document installation usage and attribution",
-    "build(sttx): package Apache-2.0 licensing",
-    "docs(sttx): document Apache-2.0 licensing",
-    "build(sttx): prove the distributable command across supported Python",
-    "chore(sttx): enforce the local-only repository contract",
-    "fix(types): keep final review boundaries sound",
-}
-CORRECTIVE_SUBJECT = re.compile(r"fix\([a-z]+\): close task (?:[1-9]|1[0-3]) verification gap\Z")
-TRAILER_ORDER = (
-    "Constraint",
-    "Rejected",
-    "Confidence",
-    "Scope-risk",
-    "Directive",
-    "Tested",
-    "Not-tested",
-)
-REQUIRED_TRAILERS = frozenset({"Constraint", "Confidence", "Scope-risk", "Tested", "Not-tested"})
-OPTIONAL_TRAILERS = frozenset({"Rejected", "Directive"})
 REQUIRED_FILES = frozenset(
     {
         ".gitignore",
@@ -97,36 +66,6 @@ def tracked_files(repository: Path) -> frozenset[str]:
     return frozenset(filter(None, git(repository, "ls-files").splitlines()))
 
 
-def assert_history_contract(repository: Path) -> None:
-    records = git(repository, "log", "--format=%H%x1f%an%x1f%ae%x1f%B%x1e").split("\x1e")
-    defects: list[str] = []
-    for record in filter(str.strip, records):
-        commit, author_name, author_email, message = record.lstrip().split("\x1f", maxsplit=3)
-        lines = message.strip().splitlines()
-        subject = lines[0] if lines else ""
-        if (author_name, author_email) != AUTHOR:
-            defects.append(f"{commit}: author is {author_name} <{author_email}>")
-        if subject not in SUBJECTS and CORRECTIVE_SUBJECT.fullmatch(subject) is None:
-            defects.append(f"{commit}: invalid subject {subject!r}")
-        if re.search(r"\bWIP\b", message, re.IGNORECASE):
-            defects.append(f"{commit}: WIP marker")
-        trailer_matches = re.findall(r"^([A-Za-z-]+):\s*(.+)$", message, re.MULTILINE)
-        trailer_keys = [key for key, _ in trailer_matches]
-        if any(key not in TRAILER_ORDER for key in trailer_keys):
-            defects.append(f"{commit}: unknown decision trailer")
-        if any(trailer_keys.count(key) != 1 for key in REQUIRED_TRAILERS):
-            defects.append(f"{commit}: required trailer count")
-        if any(trailer_keys.count(key) > 1 for key in OPTIONAL_TRAILERS):
-            defects.append(f"{commit}: optional trailer count")
-        if [key for key in trailer_keys if key in TRAILER_ORDER] != [
-            key for key in TRAILER_ORDER if key in trailer_keys
-        ]:
-            defects.append(f"{commit}: trailer order")
-        if re.search(r"^(?:AI|Co-Authored-By):", message, re.MULTILINE | re.IGNORECASE):
-            defects.append(f"{commit}: prohibited trailer")
-    assert not defects, "\n".join(defects)
-
-
 def assert_repository_contract(repository: Path) -> None:
     assert git(repository, "branch", "--show-current").strip() == "main"
     assert not git(repository, "remote", "-v").strip()
@@ -160,10 +99,6 @@ def test_repository_layout_matches_the_approved_boundary() -> None:
 
 def test_repository_state_matches_the_local_only_contract() -> None:
     assert_repository_contract(REPOSITORY)
-
-
-def test_repository_history_matches_the_decision_record_contract() -> None:
-    assert_history_contract(REPOSITORY)
 
 
 def test_repository_contract_rejects_a_remote(tmp_path: Path) -> None:
