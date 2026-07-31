@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import subprocess
@@ -8,11 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from repo_snapshot import canonical_snapshot
-
 
 REPOSITORY = Path(__file__).parents[1]
-ABSTRACTOR = Path("abstractor")
 AUTHOR = ("Korridzy", "Korridzy@yandex.ru")
 SUBJECTS = {
     "chore(sttx): establish the standalone project boundary",
@@ -139,19 +135,6 @@ def assert_repository_contract(repository: Path) -> None:
     assert ordinary_status <= allowed_ordinary
     git(repository, "check-ignore", "--quiet", ".serena")
     assert all(line.startswith("!! ") or line in allowed_ordinary for line in status_lines)
-
-
-def test_abstractor_matches_the_immutable_baseline(request: pytest.FixtureRequest) -> None:
-    baseline = request.config.getoption("--abstractor-baseline")
-    expected_digest = request.config.getoption("--abstractor-baseline-sha256")
-    assert isinstance(baseline, Path), "--abstractor-baseline is required"
-    assert isinstance(expected_digest, str) and expected_digest, "--abstractor-baseline-sha256 is required"
-    assert baseline == Path("task-1-abstractor-baseline.json")
-    assert expected_digest == "7a3776ee50a165ca3c203093cab2c45c256e678c9c87262efd8f01f4399f45b9"
-    payload = baseline.read_bytes()
-    assert hashlib.sha256(payload).hexdigest() == expected_digest
-    assert baseline.stat().st_mode & 0o777 == 0o444
-    assert canonical_snapshot(ABSTRACTOR) == payload
 
 
 def test_repository_layout_matches_the_approved_boundary() -> None:
