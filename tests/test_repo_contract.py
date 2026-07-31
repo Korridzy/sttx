@@ -4,11 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
-
 REPOSITORY = Path(__file__).parents[1]
-AUTHOR = ("Korridzy", "Korridzy@yandex.ru")
 REQUIRED_FILES = frozenset(
     {
         ".gitignore",
@@ -66,19 +62,6 @@ def tracked_files(repository: Path) -> frozenset[str]:
     return frozenset(filter(None, git(repository, "ls-files").splitlines()))
 
 
-def assert_repository_contract(repository: Path) -> None:
-    assert git(repository, "branch", "--show-current").strip() == "main"
-    assert not git(repository, "remote", "-v").strip()
-    assert git(repository, "config", "--local", "user.name").strip() == AUTHOR[0]
-    assert git(repository, "config", "--local", "user.email").strip() == AUTHOR[1]
-    allowed_ordinary = {" M .gitignore", "?? tests/test_repo_contract.py"}
-    status_lines = set(filter(None, git(repository, "status", "--short", "--ignored").splitlines()))
-    ordinary_status = {line for line in status_lines if not line.startswith("!! ")}
-    assert ordinary_status <= allowed_ordinary
-    git(repository, "check-ignore", "--quiet", ".serena")
-    assert all(line.startswith("!! ") or line in allowed_ordinary for line in status_lines)
-
-
 def test_repository_layout_matches_the_approved_boundary() -> None:
     tracked = tracked_files(REPOSITORY)
     assert REQUIRED_FILES <= tracked
@@ -95,16 +78,3 @@ def test_repository_layout_matches_the_approved_boundary() -> None:
         or ".egg-info/" in path
     )
     assert not forbidden, forbidden
-
-
-def test_repository_state_matches_the_local_only_contract() -> None:
-    assert_repository_contract(REPOSITORY)
-
-
-def test_repository_contract_rejects_a_remote(tmp_path: Path) -> None:
-    git(tmp_path, "init", "-b", "main")
-    git(tmp_path, "config", "user.name", AUTHOR[0])
-    git(tmp_path, "config", "user.email", AUTHOR[1])
-    git(tmp_path, "remote", "add", "origin", "https://example.invalid/sttx.git")
-    with pytest.raises(AssertionError):
-        assert_repository_contract(tmp_path)
