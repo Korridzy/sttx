@@ -87,6 +87,17 @@ class ShutdownRequested(BaseException):
         return f"cancelled by {signal.Signals(self.signum).name}"
 
 
+@dataclass(frozen=True, slots=True)
+class _VerboseProgress:
+    enabled: bool
+    started: float
+
+    def report(self, message: str) -> None:
+        if self.enabled:
+            elapsed = time.perf_counter() - self.started
+            print(f"[+{elapsed:.3f}s] {message}", file=sys.stderr)
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise CliRuntimeError(f"{self.prog}: error: {message}")
@@ -238,18 +249,31 @@ def _run(
         return USAGE_OR_RUNTIME_ERROR
 
     started = time.perf_counter()
+    progress = _VerboseProgress(enabled=verbose, started=started)
+    progress.report(f"input path={media}")
+    progress.report(f"output json={paths.json_path} txt={paths.txt_path}")
     transcript: Transcript | None = None
     try:
+        progress.report("normalize start")
         with _normalize_media(media) as prepared:
+            progress.report(f"normalize complete duration={prepared.duration:.2f}s")
+            progress.report("models resolve start")
             bundle = _resolve_bundle(model_dir)
+            progress.report("models resolve complete")
+            progress.report("recognizer initialize start")
             recognizer = _make_recognizer(bundle)
+            progress.report("recognizer initialize complete")
+            progress.report("VAD initialize start")
             vad = _make_vad(bundle)
+            progress.report("VAD initialize complete")
+            progress.report("transcribe start")
             transcript = _transcribe_with_error_boundary(
                 prepared,
                 recognizer,
                 vad,
                 _transcribe,
             )
+            progress.report(f"transcribe complete language={transcript.language} segments={len(transcript.segments)}")
     except (
         AudioEnvironmentError,
         ModelEnvironmentError,
@@ -266,7 +290,9 @@ def _run(
         return USAGE_OR_RUNTIME_ERROR
 
     try:
+        progress.report("write outputs start")
         _write_outputs(transcript, paths)
+        progress.report("write outputs complete")
     except OutputWriteError as error:
         _print_error(error)
         return ENVIRONMENT_ERROR

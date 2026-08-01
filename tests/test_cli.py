@@ -254,6 +254,20 @@ def test_verbose_prints_progress_to_stderr(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert f"input path={media}" in captured.err
+    assert f"output json={paths.json_path} txt={paths.txt_path}" in captured.err
+    assert "normalize start" in captured.err
+    assert "normalize complete duration=1.00s" in captured.err
+    assert "models resolve start" in captured.err
+    assert "models resolve complete" in captured.err
+    assert "recognizer initialize start" in captured.err
+    assert "recognizer initialize complete" in captured.err
+    assert "VAD initialize start" in captured.err
+    assert "VAD initialize complete" in captured.err
+    assert "transcribe start" in captured.err
+    assert "transcribe complete language=ru segments=1" in captured.err
+    assert "write outputs start" in captured.err
+    assert "write outputs complete" in captured.err
     assert "complete duration=1.25s rtf=" in captured.err
 
 
