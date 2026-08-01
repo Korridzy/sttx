@@ -117,12 +117,12 @@ def _run(
     return vad, recognizer, transcript.to_dict()
 
 
-def test_sentencepiece_tokens_become_timed_words(tmp_path: Path) -> None:
+def test_leading_and_sentencepiece_tokens_become_timed_words(tmp_path: Path) -> None:
     result = FakeResult(
-        text="Hello world.",
-        tokens=("▁Hel", "lo", "▁world", "."),
-        timestamps=(0.0, 0.1, 0.5, 0.9),
-        durations=(0.1, 0.4, 0.4, 0.1),
+        text="piece world.",
+        tokens=("p", "iece", "▁wor", "ld", "."),
+        timestamps=(0.0, 0.1, 0.5, 0.7, 0.9),
+        durations=(0.1, 0.4, 0.2, 0.2, 0.1),
     )
 
     _, _, payload = _run(
@@ -133,27 +133,39 @@ def test_sentencepiece_tokens_become_timed_words(tmp_path: Path) -> None:
     )
 
     assert payload["segments"] == [
-        {"id": 0, "start": 0.0, "end": 1.0, "text": "Hello world."}
+        {"id": 0, "start": 0.0, "end": 1.0, "text": "piece world."}
     ]
 
 
-def test_sentence_boundaries_and_trailing_words(tmp_path: Path) -> None:
-    result = FakeResult(
-        text="One. Two trailing",
-        tokens=(" One", ".", " Two", " trailing"),
-        timestamps=(0.0, 0.2, 0.5, 0.8),
+def test_sentence_boundaries_trailing_words_orphan_punctuation_and_empty_marker(tmp_path: Path) -> None:
+    first = FakeResult(
+        text="One.",
+        tokens=(" One", "."),
+        timestamps=(0.0, 0.2),
+        durations=(0.2, 0.3),
+    )
+    punctuation = FakeResult(".", (".",), (0.0,), durations=(0.1,))
+    trailing = FakeResult(
+        text="Two trailing",
+        tokens=(" Two", "▁", "trailing"),
+        timestamps=(0.0, 0.3, 0.4),
+        durations=(0.3, 0.1, 0.1),
     )
 
     _, _, payload = _run(
         tmp_path,
-        sample_count=16_000,
-        segments=(_segment(0, 16_000),),
-        results=(result,),
+        sample_count=24_000,
+        segments=(
+            _segment(0, 8_000),
+            _segment(8_000, 8_000),
+            _segment(16_000, 8_000),
+        ),
+        results=(first, punctuation, trailing),
     )
 
     assert payload["segments"] == [
-        {"id": 0, "start": 0.0, "end": 0.5, "text": "One."},
-        {"id": 1, "start": 0.5, "end": 1.0, "text": "Two trailing"},
+        {"id": 0, "start": 0.0, "end": 0.6, "text": "One.."},
+        {"id": 1, "start": 1.0, "end": 1.5, "text": "Two trailing"},
     ]
 
 
@@ -284,7 +296,6 @@ def test_control_only_result_is_empty(tmp_path: Path) -> None:
         FakeResult("Bad", (" Bad",), (0.9,), durations=(0.2,)),
         FakeResult("Mismatch", (" Mis", "match"), (0.0,)),
         FakeResult("Mismatch", (" Mismatch",), (0.0,), durations=(0.1, 0.2)),
-        FakeResult(".", (".",), (0.0,)),
     ],
 )
 def test_invalid_timing_is_transcription_error(

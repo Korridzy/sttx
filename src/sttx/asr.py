@@ -14,9 +14,7 @@ from sttx.output import Segment, Transcript
 
 VAD_WINDOW_SAMPLES: Final = 512
 MAX_CHUNK_SAMPLES: Final = 480_000
-CONTROL_TOKENS: Final = frozenset(
-    {"", "<blk>", "<blank>", "<s>", "</s>", "<unk>"}
-)
+CONTROL_TOKENS: Final = frozenset({"", "<blk>", "<blank>", "<s>", "</s>", "<unk>"})
 SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
 
@@ -204,18 +202,23 @@ def _word_events(
         boundary = token.startswith("▁") or token.startswith(" ")
         if boundary:
             piece = token[1:] if token.startswith("▁") else token.lstrip(" ")
-            if not piece:
-                raise TranscriptionError(reason="empty word-boundary token")
             if current_text:
                 words.append(
                     WordEvent(current_text, offset + current_start, offset + current_end)
                 )
+            if not piece:
+                current_text = ""
+                continue
             current_text = piece
             current_start = start
             current_end = end
             continue
         if not current_text:
-            raise TranscriptionError(reason=f"token has no preceding word: {token!r}")
+            if token in SENTENCE_PUNCTUATION:
+                words.append(WordEvent(token, offset + start, offset + end))
+            else:
+                current_text, current_start, current_end = token, start, end
+            continue
         current_text += token
         current_end = end
         if token in SENTENCE_PUNCTUATION:
@@ -251,6 +254,15 @@ def _append_monotonic(
             or word.end > wav_duration + TIMING_TOLERANCE
         ):
             raise TranscriptionError(reason="global word timing is not monotonic")
+        if word.text in SENTENCE_PUNCTUATION and accumulated:
+            previous = accumulated[-1]
+            accumulated[-1] = WordEvent(
+                text=f"{previous.text}{word.text}",
+                start=previous.start,
+                end=word.end,
+            )
+            previous_end = word.end
+            continue
         accumulated.append(word)
         previous_end = word.end
 
