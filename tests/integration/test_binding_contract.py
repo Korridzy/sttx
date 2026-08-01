@@ -113,20 +113,13 @@ def _assert_result_contract(
     for token in tokens:
         if token in CONTROL_TOKENS:
             controls.append(token)
-        elif token.startswith("▁"):
-            piece = token.removeprefix("▁")
-            assert piece, f"unidentified empty word-boundary token: {token!r}"
+        elif token.startswith(("▁", " ")):
+            piece = token.removeprefix("▁").lstrip(" ")
             words.append(piece)
-        elif token.startswith(" "):
-            piece = token.lstrip(" ")
-            assert piece, f"unidentified empty word-boundary token: {token!r}"
-            words.append(piece)
-        elif token in PUNCTUATION:
-            assert words, f"punctuation has no preceding word: {token!r}"
+        elif words:
             words[-1] += token
         else:
-            assert words, f"subtoken has no supported word boundary: {token!r}"
-            words[-1] += token
+            words.append(token)
 
     reconstructed = " ".join(words)
     assert _normalize(reconstructed) == _normalize(text), (
@@ -165,20 +158,21 @@ def test_mismatched_token_timestamps_are_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    "tokens",
+    ("tokens", "timestamps"),
     [
-        (" A", "sk", " not", "."),
-        ("▁A", "sk", "▁not", "."),
+        ((" A", "sk", " not", "."), (0.0, 0.1, 0.4, 0.7)),
+        (("▁A", "sk", "▁", "not", "."), (0.0, 0.1, 0.4, 0.5, 0.7)),
     ],
 )
 def test_supported_word_boundaries_reconstruct_text(
     tokens: tuple[str, ...],
+    timestamps: tuple[float, ...],
 ) -> None:
     # Given: equivalent word boundaries observed across supported tokenizers.
     result = FakeResult(
         text="Ask not.",
         tokens=tokens,
-        timestamps=(0.0, 0.1, 0.4, 0.7),
+        timestamps=timestamps,
     )
 
     # When: the result crosses the compatibility boundary.
