@@ -41,6 +41,8 @@ def test_warm_hf_and_silero_caches_never_call_network(tmp_path: Path) -> None:
     assert [call["local_files_only"] for call in calls] == [True, True]
     assert silero_calls == []
     assert bundle_paths(first) == bundle_paths(second)
+    assert first.source == "cache"
+    assert second.source == "cache"
     assert silero.read_bytes() == b"warm-silero"
 
 
@@ -94,6 +96,8 @@ def test_absent_components_are_acquired_once(tmp_path: Path) -> None:
     assert len(silero_calls) == 1
     assert first.silero.read_bytes() == b"downloaded-silero"
     assert bundle_paths(first) == bundle_paths(second)
+    assert first.source == "download"
+    assert second.source == "cache"
 
 
 def test_zero_length_silero_is_reacquired(tmp_path: Path) -> None:

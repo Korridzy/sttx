@@ -48,7 +48,14 @@ class SnapshotDownloader(Protocol):
 
 
 SileroDownloader = Callable[[Path], None]
-BundleWire: TypeAlias = tuple[str, str, str, str, str]
+ModelSource: TypeAlias = Literal[
+    "explicit",
+    "cache",
+    "download",
+    "cache+download",
+    "unknown",
+]
+BundleWire: TypeAlias = tuple[str, str, str, str, str, ModelSource]
 BundleMessage: TypeAlias = (
     tuple[Literal["ok"], BundleWire] | tuple[Literal["error"], str]
 )
@@ -70,6 +77,7 @@ class ModelBundle:
     joiner: Path
     tokens: Path
     silero: Path
+    source: ModelSource = "unknown"
 
 
 def resolve_bundle(
@@ -80,7 +88,10 @@ def resolve_bundle(
     _silero_downloader: SileroDownloader | None = None,
 ) -> ModelBundle:
     if model_dir is not None:
-        return _bundle_from_directory(model_dir, include_silero=True)
+        return replace(
+            _bundle_from_directory(model_dir, include_silero=True),
+            source="explicit",
+        )
 
     download_snapshot = _snapshot_download or _download_snapshot
     cache_dir = _hf_cache_dir()
@@ -94,6 +105,7 @@ def resolve_bundle(
             )
         )
         parakeet = _bundle_from_directory(local_snapshot, include_silero=False)
+        parakeet_source: ModelSource = "cache"
     except (
         IncompleteSnapshotError,
         LocalEntryNotFoundError,
@@ -114,15 +126,24 @@ def resolve_bundle(
                 reason=f"Hugging Face acquisition failed: {error}",
             ) from error
         parakeet = _bundle_from_directory(online_snapshot, include_silero=False)
+        parakeet_source = "download"
 
     silero_path = _silero_cache_path or (
         Path.home() / ".cache" / "sttx" / SILERO_FILENAME
+    )
+    silero_source: ModelSource = (
+        "cache" if _is_readable_asset(silero_path) else "download"
     )
     silero = _resolve_silero(
         silero_path,
         _silero_downloader or _download_silero,
     )
-    return replace(parakeet, silero=silero)
+    source: ModelSource = (
+        parakeet_source
+        if parakeet_source == silero_source
+        else "cache+download"
+    )
+    return replace(parakeet, silero=silero, source=source)
 
 
 def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
@@ -167,14 +188,22 @@ def _resolve_bundle_worker(messages: Queue[BundleMessage]) -> None:
         str(bundle.joiner),
         str(bundle.tokens),
         str(bundle.silero),
+        bundle.source,
     )
     messages.put(("ok", paths))
 
 
 def _bundle_from_message(message: BundleMessage) -> ModelBundle:
     match message:
-        case ("ok", (encoder, decoder, joiner, tokens, silero)):
-            return ModelBundle(Path(encoder), Path(decoder), Path(joiner), Path(tokens), Path(silero))
+        case ("ok", (encoder, decoder, joiner, tokens, silero, source)):
+            return ModelBundle(
+                Path(encoder),
+                Path(decoder),
+                Path(joiner),
+                Path(tokens),
+                Path(silero),
+                source,
+            )
         case ("error", reason):
             raise ModelEnvironmentError(path=Path(PARAKEET_REPO_ID), reason=reason)
         case _ as unreachable:
