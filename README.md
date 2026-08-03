@@ -65,7 +65,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--version] media
+sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -83,6 +83,11 @@ sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--version]
 - `-vv` (or `--verbose --verbose`) — also write live transcription progress,
   including processed audio position, real-time factor, and estimated time
   remaining.
+- `--debug` — enable pipeline progress plus diagnostic details on stderr:
+  ffmpeg arguments, the normalized WAV path, model source and asset paths/sizes,
+  stage timings, live ASR scan/VAD/decode activity, reported language, word
+  counts, and an aggregate ASR summary. It includes a traceback for unexpected
+  failures and never prints transcript content.
 - `--version` — print `sttx 0.1.0` and exit.
 
 There is no language option: the model reports a language when available and
@@ -93,9 +98,9 @@ the JSON writer falls back to `"auto"`.
 On a successful transcription, stdout contains exactly two newline-separated
 paths, JSON first and TXT second. The application writes diagnostics to
 stderr: argument usage/errors, environment or runtime errors, the no-speech
-warning, and optional verbose stage and live-progress messages. `--help` and
-`--version` are the usual argparse exceptions: their informational text is
-printed to stdout and they exit successfully.
+warning, optional verbose stage and live-progress messages, and debug
+diagnostics. `--help` and `--version` are the usual argparse exceptions: their
+informational text is printed to stdout and they exit successfully.
 
 The process exits with:
 
