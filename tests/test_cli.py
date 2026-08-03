@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -90,7 +91,8 @@ def test_parser_contract() -> None:
     assert namespace.output == "episode"
     assert namespace.outdir == Path("results")
     assert namespace.model_dir == Path("models")
-    assert namespace.verbose is True
+    assert namespace.verbose == 1
+    assert parser.parse_args(["media.mp4", "-vv"]).verbose == 2
 
 
 def test_output_precedence_and_exact_paths(
@@ -268,7 +270,54 @@ def test_verbose_prints_progress_to_stderr(
     assert "transcribe complete language=ru segments=1" in captured.err
     assert "write outputs start" in captured.err
     assert "write outputs complete" in captured.err
+    assert "transcribe progress=" not in captured.err
     assert "complete duration=1.25s rtf=" in captured.err
+
+
+def test_double_verbose_prints_transcription_progress_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: PreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Transcript:
+        del recognizer, vad
+        assert progress is not None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    exit_code = run(
+        [str(media), "-vv", "--model-dir", str(tmp_path)],
+        _normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
+        _make_vad=lambda model_bundle: FakeVad(model_bundle),
+        _transcribe_with_progress=transcribe,
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "transcribe progress=50% audio=0.50s/1.00s" in captured.err
+    assert "transcribe progress=100% audio=1.00s/1.00s" in captured.err
+    assert "eta=0.00s" in captured.err
 
 
 def test_run_validates_input_and_output_before_bundle_acquisition(

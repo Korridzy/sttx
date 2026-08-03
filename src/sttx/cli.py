@@ -17,6 +17,7 @@ import sherpa_onnx
 from sttx import __version__
 from sttx.asr import (
     FloatSamples,
+    ProgressCallback,
     RecognitionResult,
     RecognitionStream,
     Recognizer,
@@ -71,6 +72,18 @@ class TranscribeFn(Protocol[RecognizerT_contra, VadT_contra]):
     ) -> Transcript: ...
 
 
+class ProgressTranscribeFn(Protocol[RecognizerT_contra, VadT_contra]):
+    def __call__(
+        self,
+        audio: PreparedAudio,
+        /,
+        *,
+        recognizer: RecognizerT_contra,
+        vad: VadT_contra,
+        progress: ProgressCallback,
+    ) -> Transcript: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CliRuntimeError(Exception):
     reason: str
@@ -87,15 +100,41 @@ class ShutdownRequested(BaseException):
         return f"cancelled by {signal.Signals(self.signum).name}"
 
 
-@dataclass(frozen=True, slots=True)
 class _VerboseProgress:
-    enabled: bool
+    __slots__: tuple[str, ...] = ("verbosity", "started", "last_percent")
+    verbosity: int
     started: float
+    last_percent: int
+
+    def __init__(self, verbosity: int, started: float) -> None:
+        self.verbosity = verbosity
+        self.started = started
+        self.last_percent = 0
 
     def report(self, message: str) -> None:
-        if self.enabled:
+        if self.verbosity > 0:
             elapsed = time.perf_counter() - self.started
             print(f"[+{elapsed:.3f}s] {message}", file=sys.stderr)
+
+    def report_transcription(self, processed_samples: int, total_samples: int) -> None:
+        percent = processed_samples * 100 // total_samples
+        if percent <= self.last_percent:
+            return
+        self.last_percent = percent
+        elapsed = max(time.perf_counter() - self.started, 1e-9)
+        processed_seconds = processed_samples / SAMPLE_RATE
+        total_seconds = total_samples / SAMPLE_RATE
+        rtf = elapsed / processed_seconds
+        eta = (total_seconds - processed_seconds) * rtf
+        message = " ".join(
+            (
+                f"transcribe progress={percent}%",
+                f"audio={processed_seconds:.2f}s/{total_seconds:.2f}s",
+                f"rtf={rtf:.3f}",
+                f"eta={eta:.2f}s",
+            )
+        )
+        self.report(message)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -141,7 +180,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", dest="output")
     parser.add_argument("-d", "--outdir", type=Path)
     parser.add_argument("--model-dir", type=Path)
-    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="write stage progress to stderr; repeat for live transcription progress",
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -168,6 +213,7 @@ def run(
     _make_recognizer: RecognizerFactory[RecognizerT] = _default_make_recognizer,
     _make_vad: VadFactory[VadT] = _default_make_vad,
     _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
+    _transcribe_with_progress: ProgressTranscribeFn[RecognizerT, VadT] | None = None,
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
     _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
     _cwd: Path | None = None,
@@ -197,6 +243,7 @@ def run(
             _make_recognizer=_make_recognizer,
             _make_vad=_make_vad,
             _transcribe=_transcribe,
+            _transcribe_with_progress=_transcribe_with_progress,
             _output_paths=_output_paths,
             _write_outputs=_write_outputs,
             _cwd=_cwd,
@@ -217,6 +264,7 @@ def _run(
     _make_recognizer: RecognizerFactory[RecognizerT] = _default_make_recognizer,
     _make_vad: VadFactory[VadT] = _default_make_vad,
     _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
+    _transcribe_with_progress: ProgressTranscribeFn[RecognizerT, VadT] | None = None,
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
     _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
     _cwd: Path | None = None,
@@ -236,7 +284,7 @@ def _run(
     output = namespace.output
     outdir = namespace.outdir
     model_dir = namespace.model_dir
-    verbose = namespace.verbose
+    verbosity = namespace.verbose
 
     try:
         _validate_input(media)
@@ -249,7 +297,7 @@ def _run(
         return USAGE_OR_RUNTIME_ERROR
 
     started = time.perf_counter()
-    progress = _VerboseProgress(enabled=verbose, started=started)
+    progress = _VerboseProgress(verbosity=verbosity, started=started)
     progress.report(f"input path={media}")
     progress.report(f"output json={paths.json_path} txt={paths.txt_path}")
     transcript: Transcript | None = None
@@ -267,12 +315,33 @@ def _run(
             vad = _make_vad(bundle)
             progress.report("VAD initialize complete")
             progress.report("transcribe start")
-            transcript = _transcribe_with_error_boundary(
-                prepared,
-                recognizer,
-                vad,
-                _transcribe,
-            )
+            if verbosity > 1:
+                if _transcribe_with_progress is None:
+                    transcript = _transcribe_with_error_boundary(
+                        lambda: transcribe(
+                            prepared,
+                            recognizer=recognizer,
+                            vad=vad,
+                            progress=progress.report_transcription,
+                        )
+                    )
+                else:
+                    transcript = _transcribe_with_error_boundary(
+                        lambda: _transcribe_with_progress(
+                            prepared,
+                            recognizer=recognizer,
+                            vad=vad,
+                            progress=progress.report_transcription,
+                        )
+                    )
+            else:
+                transcript = _transcribe_with_error_boundary(
+                    lambda: _transcribe(
+                        prepared,
+                        recognizer=recognizer,
+                        vad=vad,
+                    )
+                )
             progress.report(f"transcribe complete language={transcript.language} segments={len(transcript.segments)}")
     except (
         AudioEnvironmentError,
@@ -302,7 +371,7 @@ def _run(
 
     if not transcript.segments:
         print("warning: no speech detected", file=sys.stderr)
-    if verbose:
+    if verbosity > 0:
         _print_progress(transcript, started)
     print(paths.json_path)
     print(paths.txt_path)
@@ -314,17 +383,10 @@ def main() -> None:
 
 
 def _transcribe_with_error_boundary(
-    prepared: PreparedAudio,
-    recognizer: RecognizerT,
-    vad: VadT,
-    transcribe_fn: TranscribeFn[RecognizerT, VadT],
+    transcribe_call: Callable[[], Transcript],
 ) -> Transcript:
     try:
-        return transcribe_fn(
-            prepared,
-            recognizer=recognizer,
-            vad=vad,
-        )
+        return transcribe_call()
     except (OSError, RuntimeError, ValueError) as error:
         raise CliRuntimeError(f"transcription decode failed: {error}") from error
 
