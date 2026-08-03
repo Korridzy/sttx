@@ -201,6 +201,52 @@ def test_transcribe_reports_processed_audio_position(tmp_path: Path) -> None:
     assert progress == [(512, 1_024), (1_024, 1_024)]
 
 
+def test_transcribe_reports_activity_events(tmp_path: Path) -> None:
+    # Given: one voiced VAD segment with a reported language and word.
+    from sttx.asr_events import (
+        AsrActivity,
+        DecodeFinished,
+        DecodeStarted,
+        LanguageReported,
+        ScanAdvanced,
+        ScanFinished,
+        ScanStarted,
+        TranscriptionSummary,
+        VadSegmentReady,
+        WordCountUpdated,
+    )
+
+    events: list[AsrActivity] = []
+
+    # When: the decoder receives an activity callback.
+    transcribe(
+        _prepared_wav(tmp_path, 1_024),
+        recognizer=FakeRecognizer(
+            results=[FakeResult("Hello", (" Hello",), (0.0,), lang="en")]
+        ),
+        vad=FakeVad(pending=[_segment(0, 512)]),
+        activity=events.append,
+    )
+
+    # Then: all ASR lifecycle boundaries are surfaced in source order.
+    assert [type(event) for event in events] == [
+        ScanStarted,
+        ScanAdvanced,
+        ScanAdvanced,
+        VadSegmentReady,
+        DecodeStarted,
+        DecodeFinished,
+        LanguageReported,
+        WordCountUpdated,
+        ScanFinished,
+        TranscriptionSummary,
+    ]
+    summary = events[-1]
+    assert isinstance(summary, TranscriptionSummary)
+    assert summary.word_count == 1
+    assert summary.language == "en"
+
+
 def test_vad_windows_never_exceed_30_seconds(tmp_path: Path) -> None:
     vad, recognizer, _ = _run(
         tmp_path,

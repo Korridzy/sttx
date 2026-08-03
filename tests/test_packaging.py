@@ -16,6 +16,7 @@ DIST_INFO = "sttx-0.1.0.dist-info"
 EXPECTED_SOURCES = {
     "sttx/__init__.py",
     "sttx/asr.py",
+    "sttx/asr_events.py",
     "sttx/audio.py",
     "sttx/cli.py",
     "sttx/model.py",
