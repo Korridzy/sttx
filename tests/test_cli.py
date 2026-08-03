@@ -10,6 +10,18 @@ from types import TracebackType
 import pytest
 
 from sttx.audio import AudioEnvironmentError, PreparedAudio
+from sttx.asr_events import (
+    ActivityCallback,
+    DecodeFinished,
+    DecodeStarted,
+    LanguageReported,
+    ScanAdvanced,
+    ScanFinished,
+    ScanStarted,
+    TranscriptionSummary,
+    VadSegmentReady,
+    WordCountUpdated,
+)
 from sttx.model import ModelBundle, ModelEnvironmentError
 from sttx.output import OutputPathError, OutputPaths, Segment, Transcript, write_outputs
 
@@ -93,6 +105,8 @@ def test_parser_contract() -> None:
     assert namespace.model_dir == Path("models")
     assert namespace.verbose == 1
     assert parser.parse_args(["media.mp4", "-vv"]).verbose == 2
+    assert parser.parse_args(["media.mp4"]).debug is False
+    assert parser.parse_args(["media.mp4", "--debug"]).debug is True
 
 
 def test_output_precedence_and_exact_paths(
@@ -318,6 +332,126 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
     assert "transcribe progress=50% audio=0.50s/1.00s" in captured.err
     assert "transcribe progress=100% audio=1.00s/1.00s" in captured.err
     assert "eta=0.00s" in captured.err
+
+
+def test_debug_prints_internal_diagnostics_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a successful injected run with deep diagnostics requested.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    prepared_path = tmp_path / "prepared.wav"
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+    activity_calls: list[bool] = []
+
+    def transcribe_with_activity(
+        _audio: PreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        activity: ActivityCallback,
+    ) -> Transcript:
+        del recognizer, vad
+        activity(ScanStarted(total_samples=16_000))
+        activity(ScanAdvanced(processed_samples=8_000, total_samples=16_000))
+        activity(VadSegmentReady(index=1, start_sample=0, sample_count=8_000))
+        activity(DecodeStarted(index=1, start_sample=0, sample_count=8_000))
+        activity(DecodeFinished(index=1, start_sample=0, sample_count=8_000))
+        activity(LanguageReported(language="ru"))
+        activity(WordCountUpdated(word_count=2))
+        activity(ScanFinished(total_samples=16_000))
+        activity(
+            TranscriptionSummary(
+                total_samples=16_000,
+                voiced_samples=8_000,
+                vad_segments=1,
+                decoded_samples=8_000,
+                decode_chunks=1,
+                word_count=2,
+                language="ru",
+                transcript_segments=1,
+            )
+        )
+        activity_calls.append(True)
+        return _transcript()
+
+    # When: debug mode is enabled.
+    exit_code = run(
+        [str(media), "--debug", "--model-dir", str(tmp_path)],
+        _normalize_media=lambda _path: FakePreparedAudio(
+            path=prepared_path,
+            sample_count=16_000,
+        ),
+        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
+        _make_vad=lambda model_bundle: FakeVad(model_bundle),
+        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _transcribe_with_activity=transcribe_with_activity,
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: diagnostics are complete enough for reproduction but stdout is unchanged.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert activity_calls == [True]
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "debug configuration" in captured.err
+    assert "debug ffmpeg argv=ffmpeg -nostdin" in captured.err
+    assert f"debug normalized_wav={prepared_path}" in captured.err
+    assert "debug model source=explicit" in captured.err
+    assert "debug model asset=encoder path=" in captured.err
+    assert "debug stage=normalize duration=" in captured.err
+    assert "debug asr scan progress=50% audio=0.50s/1.00s" in captured.err
+    assert "debug asr vad segment=1 audio=0.00s+0.50s" in captured.err
+    assert "debug asr decode start chunk=1" in captured.err
+    assert "debug asr decode done chunk=1" in captured.err
+    assert "debug asr language reported=ru" in captured.err
+    assert "debug asr words=2" in captured.err
+    assert "debug asr summary vad_segments=1 decode_chunks=1 words=2" in captured.err
+
+
+def test_debug_prints_traceback_for_unexpected_write_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a completed transcription whose output seam raises an unexpected exception.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def broken_write(_transcript: Transcript, _paths: OutputPaths) -> None:
+        raise KeyError("staging metadata missing")
+
+    # When: debug mode handles the failure boundary.
+    exit_code = run(
+        [str(media), "--debug", "--model-dir", str(tmp_path)],
+        _normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
+        _make_vad=lambda model_bundle: FakeVad(model_bundle),
+        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=broken_write,
+        _cwd=tmp_path,
+    )
+
+    # Then: callers receive the normal runtime exit code plus debug context and traceback.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "debug failure stage=write exception=KeyError" in captured.err
+    assert "Traceback" in captured.err
+    assert "KeyError: 'staging metadata missing'" in captured.err
 
 
 def test_run_validates_input_and_output_before_bundle_acquisition(
