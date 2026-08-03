@@ -115,7 +115,22 @@ def _start_ffmpeg(
     input_path: Path,
     temp_path: Path,
 ) -> subprocess.Popen[bytes]:
-    argv = [
+    try:
+        return subprocess.Popen(
+            ffmpeg_argv(input_path, temp_path),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        raise AudioEnvironmentError(
+            path=input_path,
+            reason=f"cannot start ffmpeg: {error}",
+        ) from error
+
+
+def ffmpeg_argv(input_path: Path, temp_path: Path) -> tuple[str, ...]:
+    return (
         "ffmpeg",
         "-nostdin",
         "-hide_banner",
@@ -132,19 +147,7 @@ def _start_ffmpeg(
         "pcm_s16le",
         "-y",
         str(temp_path),
-    ]
-    try:
-        return subprocess.Popen(
-            argv,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-    except OSError as error:
-        raise AudioEnvironmentError(
-            path=input_path,
-            reason=f"cannot start ffmpeg: {error}",
-        ) from error
+    )
 
 
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
