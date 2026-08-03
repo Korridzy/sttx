@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol, TypeAlias, TypeVar
 
@@ -19,6 +19,7 @@ SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
 
 FloatSamples: TypeAlias = NDArray[np.float32]
+ProgressCallback: TypeAlias = Callable[[int, int], None]
 
 
 class RecognitionStream(Protocol):
@@ -93,14 +94,20 @@ def transcribe(
     *,
     recognizer: Recognizer[StreamT, ResultT],
     vad: VoiceActivityDetector,
+    progress: ProgressCallback | None = None,
 ) -> Transcript:
     samples = _read_samples(audio)
     state = _PipelineState(words=[])
     for start in range(0, len(samples), VAD_WINDOW_SAMPLES):
         vad.accept_waveform(samples[start : start + VAD_WINDOW_SAMPLES])
         _drain_vad(vad, recognizer, audio.sample_count, state)
+        processed_samples = min(start + VAD_WINDOW_SAMPLES, audio.sample_count)
+        if progress is not None and processed_samples < audio.sample_count:
+            progress(processed_samples, audio.sample_count)
     vad.flush()
     _drain_vad(vad, recognizer, audio.sample_count, state)
+    if progress is not None:
+        progress(audio.sample_count, audio.sample_count)
     return Transcript(
         language=state.language or "auto",
         duration=audio.duration,

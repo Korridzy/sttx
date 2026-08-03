@@ -188,6 +188,19 @@ def test_vad_flush_emits_final_speech(tmp_path: Path) -> None:
     assert payload["text"] == "Final"
 
 
+def test_transcribe_reports_processed_audio_position(tmp_path: Path) -> None:
+    progress: list[tuple[int, int]] = []
+
+    transcribe(
+        _prepared_wav(tmp_path, 1_024),
+        recognizer=FakeRecognizer(results=[]),
+        vad=FakeVad(pending=[]),
+        progress=lambda processed, total: progress.append((processed, total)),
+    )
+
+    assert progress == [(512, 1_024), (1_024, 1_024)]
+
+
 def test_vad_windows_never_exceed_30_seconds(tmp_path: Path) -> None:
     vad, recognizer, _ = _run(
         tmp_path,
