@@ -8,7 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +20,7 @@ type JsonValue = (
     | int
     | float
     | str
-    | list[JsonValue]
+    | Sequence[JsonValue]
     | Mapping[str, JsonValue]
 )
 
@@ -35,11 +35,20 @@ RUNTIME_PACKAGES = (
 
 
 class BundlePaths(Protocol):
-    encoder: Path
-    decoder: Path
-    joiner: Path
-    tokens: Path
-    silero: Path
+    @property
+    def encoder(self) -> Path: ...
+
+    @property
+    def decoder(self) -> Path: ...
+
+    @property
+    def joiner(self) -> Path: ...
+
+    @property
+    def tokens(self) -> Path: ...
+
+    @property
+    def silero(self) -> Path: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +89,12 @@ def write_json(path: Path, payload: Mapping[str, JsonValue]) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(staging, path)
+
+
+def json_mapping(value: JsonValue, label: str) -> Mapping[str, JsonValue]:
+    if not isinstance(value, Mapping):
+        raise AssertionError(f"{label} is not a JSON object")
+    return value
 
 
 def sha256(path: Path) -> str:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from real_pipeline_artifacts import JsonValue
-from real_pipeline_evidence_contract import (
+from .real_pipeline_artifacts import JsonValue
+from .real_pipeline_evidence_contract import (
     EvidenceContractError,
     assert_todo10_contract,
 )
