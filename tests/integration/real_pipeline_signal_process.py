@@ -7,8 +7,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from real_pipeline_artifacts import JsonValue
-from real_pipeline_runner import CacheEnv, STTX_BIN
+from .real_pipeline_artifacts import JsonValue
+from .real_pipeline_runner import CacheEnv, STTX_BIN
 
 SIGNAL_TIMEOUT_SECONDS = 30.0
 

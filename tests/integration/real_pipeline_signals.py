@@ -5,9 +5,9 @@ import signal
 import subprocess
 from pathlib import Path
 
-from real_pipeline_artifacts import JsonValue, root_manifest
-from real_pipeline_runner import CacheEnv, sanitized_env
-from real_pipeline_signal_process import (
+from .real_pipeline_artifacts import JsonValue, root_manifest
+from .real_pipeline_runner import CacheEnv, sanitized_env
+from .real_pipeline_signal_process import (
     SignalProbe,
     finish_probe,
     start_sttx,
@@ -69,7 +69,7 @@ def _probe_silero(tmp_path: Path, bundle_dir: Path, signum: signal.Signals) -> S
         "import time\n"
         "import urllib.request\n"
         "from sttx.audio import PreparedAudio\n"
-        "from sttx.cli import run\n"
+        "from sttx.cli import RunnerDependencies, run\n"
         "from sttx.model import resolve_bundle, PARAKEET_FILENAMES\n"
         "from sttx.output import Segment, Transcript\n"
         f"root=Path({str(root)!r}); snapshot=root/'snapshot'; snapshot.mkdir(parents=True)\n"
@@ -88,9 +88,10 @@ def _probe_silero(tmp_path: Path, bundle_dir: Path, signum: signal.Signals) -> S
         "    while True: time.sleep(60)\n"
         "def resolver(_model_dir):\n"
         "    return resolve_bundle(_snapshot_download=lambda **kwargs: str(snapshot), _silero_cache_path=root/'cache'/'silero_vad.onnx', _silero_downloader=silero)\n"
-        "def transcribe(audio, *, recognizer, vad):\n"
+        "def transcribe(audio, *, recognizer, vad, progress=None, activity=None):\n"
         "    return Transcript(language='en', duration=1.0, segments=(Segment(id=0, start=0.0, end=1.0, text='ok'),))\n"
-        "raise SystemExit(run([str(media), '-d', str(root/'out')], _normalize_media=lambda path: PreparedAudio(path=media, sample_count=16000), _resolve_bundle=resolver, _make_recognizer=lambda bundle: bundle, _make_vad=lambda bundle: bundle, _transcribe=transcribe, _cwd=root))\n"
+        "dependencies=RunnerDependencies(normalize_media=lambda path: PreparedAudio(path=media, sample_count=16000), resolve_bundle=resolver, make_recognizer=lambda bundle: bundle, make_vad=lambda bundle: bundle, transcribe=transcribe)\n"
+        "raise SystemExit(run([str(media), '-d', str(root/'out')], _dependencies=dependencies, _cwd=root))\n"
     )
     process = subprocess.Popen(
         [str(Path.cwd() / ".venv" / "bin" / "python"), "-c", code],
@@ -100,7 +101,9 @@ def _probe_silero(tmp_path: Path, bundle_dir: Path, signum: signal.Signals) -> S
         start_new_session=True,
     )
     barrier = wait_for_path(ready, process)
-    staged_path, staged_size = barrier["ready"].splitlines()
+    ready_value = barrier["ready"]
+    assert isinstance(ready_value, str)
+    staged_path, staged_size = ready_value.splitlines()
     barrier["ready"] = staged_path
     barrier["staged_path"] = staged_path
     barrier["staged_size"] = int(staged_size)
@@ -124,19 +127,20 @@ def _probe_native_decode(
         "import os\n"
         "from pathlib import Path\n"
         "from sttx.asr import transcribe\n"
-        "from sttx.cli import run\n"
+        "from dataclasses import replace\n"
+        "from sttx.cli import _PRODUCTION_DEPENDENCIES, run\n"
         f"Path({str(ready)!r}).write_text('ready', encoding='utf-8')\n"
-        "def wrapped_transcribe(audio, *, recognizer, vad):\n"
+        "def wrapped_transcribe(audio, *, recognizer, vad, progress=None, activity=None):\n"
         f"    marker = Path({str(marker)!r})\n"
         "    marker.parent.mkdir(parents=True, exist_ok=True)\n"
         "    with marker.open('w', encoding='utf-8') as stream:\n"
         "        stream.write('real_decode_entered')\n"
         "        stream.flush()\n"
         "        os.fsync(stream.fileno())\n"
-        "    return transcribe(audio, recognizer=recognizer, vad=vad)\n"
+        "    return transcribe(audio, recognizer=recognizer, vad=vad, progress=progress, activity=activity)\n"
         "raise SystemExit(run([\n"
         f"    {str(media)!r}, '-d', {str(outdir)!r}, '--model-dir', {str(bundle_dir)!r},\n"
-        "], _transcribe=wrapped_transcribe))\n"
+        "], _dependencies=replace(_PRODUCTION_DEPENDENCIES, transcribe=wrapped_transcribe)))\n"
     )
     process = subprocess.Popen(
         [str(Path.cwd() / ".venv" / "bin" / "python"), "-c", code],

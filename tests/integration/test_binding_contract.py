@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeGuard, TypedDict
 
 import numpy as np
 import pytest
@@ -41,7 +41,7 @@ type JsonValue = (
     | int
     | float
     | str
-    | list[JsonValue]
+    | Sequence[JsonValue]
     | Mapping[str, JsonValue]
 )
 
@@ -51,11 +51,31 @@ class IdentityWriter(Protocol):
 
 
 class RecognitionResult(Protocol):
-    text: str
-    tokens: Sequence[str]
-    timestamps: Sequence[float]
-    durations: Sequence[float]
-    lang: str
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def tokens(self) -> Sequence[str]: ...
+
+    @property
+    def timestamps(self) -> Sequence[float]: ...
+
+    @property
+    def durations(self) -> Sequence[float]: ...
+
+    @property
+    def lang(self) -> str: ...
+
+
+class ResultCandidate(Protocol):
+    pass
+
+
+class VadSegmentEvidence(TypedDict):
+    start: int
+    start_seconds: float
+    sample_count: int
+    chunk_end_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,18 +99,19 @@ def _normalize(text: str) -> str:
 
 
 def _assert_result_contract(
-    result: RecognitionResult,
+    candidate: ResultCandidate,
     *,
     final_chunk_end_seconds: float,
 ) -> ContractObservation:
-    required = ("text", "tokens", "timestamps")
-    missing = [name for name in required if not hasattr(result, name)]
+    result = _require_recognition_result(candidate)
+    required = ("text", "tokens", "timestamps", "durations", "lang")
+    missing = [name for name in required if not hasattr(candidate, name)]
     assert not missing, f"binding result is missing required fields: {missing}"
 
     text = result.text
     tokens = tuple(result.tokens)
     timestamps = tuple(float(value) for value in result.timestamps)
-    durations = tuple(float(value) for value in getattr(result, "durations", ()))
+    durations = tuple(float(value) for value in result.durations)
     assert text.strip(), "binding result text is empty"
     assert tokens, "binding result tokens are empty"
     assert len(tokens) == len(timestamps), (
@@ -142,6 +163,21 @@ def _assert_result_contract(
         f"{ends[-1]} > {final_chunk_end_seconds}"
     )
     return ContractObservation(reconstructed, tuple(controls), tuple(ends))
+
+
+def _require_recognition_result(candidate: ResultCandidate) -> RecognitionResult:
+    required = ("text", "tokens", "timestamps", "durations", "lang")
+    missing = [name for name in required if not hasattr(candidate, name)]
+    assert not missing, f"binding result is missing required fields: {missing}"
+    assert _is_recognition_result(candidate)
+    return candidate
+
+
+def _is_recognition_result(candidate: ResultCandidate) -> TypeGuard[RecognitionResult]:
+    return all(
+        hasattr(candidate, name)
+        for name in ("text", "tokens", "timestamps", "durations", "lang")
+    )
 
 
 def test_mismatched_token_timestamps_are_rejected() -> None:
@@ -343,7 +379,7 @@ def test_current_binding_and_model_contract(
         )
         vad.accept_waveform(samples)
         vad.flush()
-        segments: list[Mapping[str, JsonValue]] = []
+        segments: list[VadSegmentEvidence] = []
         while not vad.empty():
             segment = vad.front
             segment_samples = np.asarray(segment.samples, dtype=np.float32)
@@ -360,10 +396,20 @@ def test_current_binding_and_model_contract(
             )
             vad.pop()
         assert segments, "VAD returned no usable speech segments"
-        assert all(int(segment["sample_count"]) > 0 for segment in segments), (
+        assert all(segment["sample_count"] > 0 for segment in segments), (
             f"VAD returned empty segments: {segments}"
         )
-        final_chunk_end = float(segments[-1]["chunk_end_seconds"])
+        final_chunk_end = segments[-1]["chunk_end_seconds"]
+        segments_json: list[JsonValue] = []
+        for segment in segments:
+            segments_json.append(
+                {
+                    "start": segment["start"],
+                    "start_seconds": segment["start_seconds"],
+                    "sample_count": segment["sample_count"],
+                    "chunk_end_seconds": segment["chunk_end_seconds"],
+                }
+            )
 
         recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=str(bundle.encoder),
@@ -380,7 +426,7 @@ def test_current_binding_and_model_contract(
         stream = recognizer.create_stream()
         stream.accept_waveform(SAMPLE_RATE, samples)
         recognizer.decode_stream(stream)
-        result = stream.result
+        result = _require_recognition_result(stream.result)
         fields = sorted(name for name in dir(result) if not name.startswith("_"))
         evidence["wav"] = {
             "repo_id": PARAKEET_REPO_ID,
@@ -400,7 +446,7 @@ def test_current_binding_and_model_contract(
                 "sample_rate": SAMPLE_RATE,
                 "window_size": 512,
             },
-            "segments": segments,
+            "segments": segments_json,
             "usable_segment_count": len(segments),
         }
         result_evidence: dict[str, JsonValue] = {
@@ -408,14 +454,14 @@ def test_current_binding_and_model_contract(
             "cardinalities": {
                 "tokens": len(result.tokens),
                 "timestamps": len(result.timestamps),
-                "durations": len(getattr(result, "durations", ())),
+                "durations": len(result.durations),
             },
             "timestamp_units": "seconds",
             "timestamps_monotonic": True,
             "raw_tokens": list(result.tokens),
             "raw_timestamps": list(result.timestamps),
-            "raw_durations": list(getattr(result, "durations", ())),
-            "lang": getattr(result, "lang", None),
+            "raw_durations": list(result.durations),
+            "lang": result.lang,
             "raw_text": result.text,
             "normalized_recognizer_text": _normalize(result.text),
             "grammar_verdict": "pending",
