@@ -12,7 +12,7 @@ from typing import Final, TypedDict
 
 import pytest
 
-from signal_driver import PHASES
+from .signal_driver import PHASES
 
 DRIVER: Final = Path(__file__).with_name("signal_driver.py")
 DEADLINE_SECONDS: Final = 5.0

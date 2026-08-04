@@ -9,7 +9,7 @@ from typing import Final, TypedDict
 
 import pytest
 
-from cli_contract_support import (
+from .cli_contract_support import (
     TEXT,
     DecodeContext,
     FormatCase,
