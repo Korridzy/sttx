@@ -74,6 +74,14 @@ RecognizerT_contra = TypeVar("RecognizerT_contra", contravariant=True)
 VadT_contra = TypeVar("VadT_contra", contravariant=True)
 
 
+def _format_duration(duration_seconds: float) -> str:
+    total_milliseconds = round(duration_seconds * 1_000)
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
 class _PreparedAudioResource(Protocol):
     path: Path
     sample_count: int
@@ -181,7 +189,7 @@ class _VerboseProgress:
     def report_stage_duration(self, stage: str, stage_started: float) -> None:
         duration = time.perf_counter() - stage_started
         self.report_debug(
-            f"stage={stage} duration={duration:.3f}s",
+            f"stage={stage} duration={_format_duration(duration)}",
             event="stage_duration",
             stage=stage,
             duration_seconds=duration,
@@ -218,7 +226,7 @@ class _VerboseProgress:
                 file=sys.stderr,
             )
             return
-        print(f"[+{elapsed:.3f}s] {message}", file=sys.stderr)
+        print(f"[+{_format_duration(elapsed)}] {message}", file=sys.stderr)
 
     def start_transcription(self) -> None:
         self.transcription_started = time.perf_counter()
@@ -256,7 +264,7 @@ class _VerboseProgress:
                 )
             case VadSegmentReady(index=index, start_sample=start_sample, sample_count=sample_count):
                 self.report_debug(
-                    f"asr vad segment={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s",
+                    f"asr vad segment={index} audio={_format_duration(start_sample / SAMPLE_RATE)}+{_format_duration(sample_count / SAMPLE_RATE)}",
                     event="asr_vad_segment_ready",
                     index=index,
                     start_seconds=start_sample / SAMPLE_RATE,
@@ -265,7 +273,7 @@ class _VerboseProgress:
             case DecodeStarted(index=index, start_sample=start_sample, sample_count=sample_count):
                 self.decode_started = time.perf_counter()
                 self.report_debug(
-                    f"asr decode start chunk={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s",
+                    f"asr decode start chunk={index} audio={_format_duration(start_sample / SAMPLE_RATE)}+{_format_duration(sample_count / SAMPLE_RATE)}",
                     event="asr_decode_started",
                     index=index,
                     start_seconds=start_sample / SAMPLE_RATE,
@@ -276,7 +284,7 @@ class _VerboseProgress:
                 self.decode_elapsed += elapsed
                 audio_seconds = max(sample_count / SAMPLE_RATE, 1e-9)
                 self.report_debug(
-                    f"asr decode done chunk={index} elapsed={elapsed:.3f}s rtf={elapsed / audio_seconds:.3f}",
+                    f"asr decode done chunk={index} elapsed={_format_duration(elapsed)} rtf={elapsed / audio_seconds:.3f}",
                     event="asr_decode_finished",
                     index=index,
                     audio_seconds=audio_seconds,
@@ -335,9 +343,9 @@ class _VerboseProgress:
                     " ".join(
                         (
                             "asr timing",
-                            f"voiced={voiced_samples / SAMPLE_RATE:.2f}s",
-                            f"decoded={decoded_samples / SAMPLE_RATE:.2f}s",
-                            f"decode_elapsed={self.decode_elapsed:.3f}s",
+                            f"voiced={_format_duration(voiced_samples / SAMPLE_RATE)}",
+                            f"decoded={_format_duration(decoded_samples / SAMPLE_RATE)}",
+                            f"decode_elapsed={_format_duration(self.decode_elapsed)}",
                             f"decode_rtf={self.decode_elapsed / decoded_seconds:.3f}",
                         )
                     ),
@@ -378,9 +386,9 @@ class _VerboseProgress:
         message = " ".join(
             (
                 f"{prefix} progress={percent}%",
-                f"audio={processed_seconds:.2f}s/{total_seconds:.2f}s",
+                f"audio={_format_duration(processed_seconds)}/{_format_duration(total_seconds)}",
                 f"rtf={rtf:.3f}",
-                f"eta={eta:.2f}s",
+                f"eta={_format_duration(eta)}",
             )
         )
         self.report(
@@ -588,7 +596,7 @@ def _run(
         progress.report("normalize start", event="stage_started", stage=stage)
         with _dependencies.normalize_media(media) as prepared:
             progress.report(
-                f"normalize complete duration={prepared.duration:.2f}s",
+                f"normalize complete duration={_format_duration(prepared.duration)}",
                 event="audio_ready",
                 audio_seconds=prepared.duration,
                 sample_count=prepared.sample_count,
@@ -892,7 +900,7 @@ def _print_progress(progress: _VerboseProgress, transcript: Transcript) -> None:
     elapsed = max(time.perf_counter() - progress.started, 1e-9)
     rtf = elapsed / max(transcript.duration, 1e-9)
     progress.report(
-        f"complete duration={transcript.duration:.2f}s rtf={rtf:.3f}",
+        f"complete duration={_format_duration(transcript.duration)} rtf={rtf:.3f}",
         event="completed",
         audio_seconds=transcript.duration,
         rtf=rtf,

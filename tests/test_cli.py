@@ -279,11 +279,21 @@ def test_verbose_prints_progress_to_stderr(
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"media")
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+    long_prepared_audio = FakePreparedAudio(
+        path=tmp_path / "prepared.wav",
+        sample_count=58_579_744,
+    )
+
+    def normalize(_path: Path) -> FakePreparedAudio:
+        return long_prepared_audio
 
     # When: verbose mode is enabled.
     exit_code = run(
         [str(media), "--verbose", "--model-dir", str(tmp_path)],
-        _dependencies=_fake_dependencies(tmp_path),
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            normalize_media=normalize,
+        ),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -296,7 +306,7 @@ def test_verbose_prints_progress_to_stderr(
     assert f"input path={media}" in captured.err
     assert f"output json={paths.json_path} txt={paths.txt_path}" in captured.err
     assert "normalize start" in captured.err
-    assert "normalize complete duration=1.00s" in captured.err
+    assert "normalize complete duration=01:01:01.234" in captured.err
     assert "models resolve start" in captured.err
     assert "models resolve complete" in captured.err
     assert "recognizer initialize start" in captured.err
@@ -308,7 +318,7 @@ def test_verbose_prints_progress_to_stderr(
     assert "write outputs start" in captured.err
     assert "write outputs complete" in captured.err
     assert "transcribe progress=" not in captured.err
-    assert "complete duration=1.25s rtf=" in captured.err
+    assert "complete duration=00:00:01.250 rtf=" in captured.err
 
 
 def test_double_verbose_prints_transcription_progress_to_stderr(
@@ -346,9 +356,9 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
-    assert "transcribe progress=50% audio=0.50s/1.00s" in captured.err
-    assert "transcribe progress=100% audio=1.00s/1.00s" in captured.err
-    assert "eta=0.00s" in captured.err
+    assert "transcribe progress=50% audio=00:00:00.500/00:00:01.000" in captured.err
+    assert "transcribe progress=100% audio=00:00:01.000/00:00:01.000" in captured.err
+    assert "eta=00:00:00.000" in captured.err
 
 
 def test_json_log_format_emits_structured_progress_and_preserves_stdout(
@@ -499,8 +509,8 @@ def test_debug_prints_internal_diagnostics_to_stderr(
     assert "debug model source=explicit" in captured.err
     assert "debug model asset=encoder path=" in captured.err
     assert "debug stage=normalize duration=" in captured.err
-    assert "debug asr scan progress=50% audio=0.50s/1.00s" in captured.err
-    assert "debug asr vad segment=1 audio=0.00s+0.50s" in captured.err
+    assert "debug asr scan progress=50% audio=00:00:00.500/00:00:01.000" in captured.err
+    assert "debug asr vad segment=1 audio=00:00:00.000+00:00:00.500" in captured.err
     assert "debug asr decode start chunk=1" in captured.err
     assert "debug asr decode done chunk=1" in captured.err
     assert "debug asr language reported=ru" in captured.err
