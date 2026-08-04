@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -107,6 +108,8 @@ def test_parser_contract() -> None:
     assert parser.parse_args(["media.mp4", "-vv"]).verbose == 2
     assert parser.parse_args(["media.mp4"]).debug is False
     assert parser.parse_args(["media.mp4", "--debug"]).debug is True
+    assert parser.parse_args(["media.mp4"]).log_format == "text"
+    assert parser.parse_args(["media.mp4", "--log-format", "json"]).log_format == "json"
 
 
 def test_output_precedence_and_exact_paths(
@@ -332,6 +335,87 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
     assert "transcribe progress=50% audio=0.50s/1.00s" in captured.err
     assert "transcribe progress=100% audio=1.00s/1.00s" in captured.err
     assert "eta=0.00s" in captured.err
+
+
+def test_json_log_format_emits_structured_progress_and_preserves_stdout(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a transcriber that reports deterministic live progress.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: PreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Transcript:
+        del recognizer, vad
+        assert progress is not None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: JSON Lines logging is requested with live transcription progress.
+    exit_code = run(
+        [str(media), "-vv", "--log-format", "json", "--model-dir", str(tmp_path)],
+        _normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
+        _make_vad=lambda model_bundle: FakeVad(model_bundle),
+        _transcribe_with_progress=transcribe,
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: stderr is machine-readable telemetry and stdout remains the artifact contract.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    records = [json.loads(line) for line in captured.err.splitlines()]
+    assert all(isinstance(record["event"], str) for record in records)
+    assert all(isinstance(record["elapsed_seconds"], float) for record in records)
+    progress_records = [
+        record for record in records if record["event"] == "transcribe_progress"
+    ]
+    assert [record["percent"] for record in progress_records] == [50, 100]
+    assert progress_records[0]["audio_seconds"] == 0.5
+    assert progress_records[0]["audio_total_seconds"] == 1.0
+    assert progress_records[0]["eta_seconds"] >= 0.0
+    assert "Привет мир" not in captured.err
+
+
+def test_json_log_format_emits_structured_validation_errors(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a missing media path and JSON log formatting.
+    from sttx.cli import run
+
+    media = tmp_path / "missing.mp4"
+
+    # When: validation fails before the transcription pipeline starts.
+    exit_code = run([str(media), "--log-format", "json"])
+
+    # Then: the failure remains a single actionable JSON record on stderr.
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    records = [json.loads(line) for line in captured.err.splitlines()]
+    assert len(records) == 1
+    assert records[0]["event"] == "error"
+    assert records[0]["stage"] == "validate"
+    assert records[0]["exception_type"] == "AudioEnvironmentError"
+    assert "input is not a readable file" in records[0]["message"]
 
 
 def test_debug_prints_internal_diagnostics_to_stderr(

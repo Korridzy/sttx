@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import shlex
@@ -60,6 +61,7 @@ SUCCESS: int = 0
 ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
+JsonLogField = str | int | float | bool | None | list[str]
 RecognizerT = TypeVar("RecognizerT")
 VadT = TypeVar("VadT")
 RecognizerT_co = TypeVar("RecognizerT_co", covariant=True)
@@ -131,6 +133,7 @@ class _VerboseProgress:
     __slots__: tuple[str, ...] = (
         "verbosity",
         "debug",
+        "json_logging",
         "started",
         "last_percent",
         "last_progress_at",
@@ -140,6 +143,7 @@ class _VerboseProgress:
     )
     verbosity: int
     debug: bool
+    json_logging: bool
     started: float
     last_percent: int
     last_progress_at: float | None
@@ -147,9 +151,16 @@ class _VerboseProgress:
     decode_started: float
     decode_elapsed: float
 
-    def __init__(self, verbosity: int, debug: bool, started: float) -> None:
+    def __init__(
+        self,
+        verbosity: int,
+        debug: bool,
+        json_logging: bool,
+        started: float,
+    ) -> None:
         self.verbosity = verbosity
         self.debug = debug
+        self.json_logging = json_logging
         self.started = started
         self.last_percent = 0
         self.last_progress_at = None
@@ -157,21 +168,54 @@ class _VerboseProgress:
         self.decode_started = started
         self.decode_elapsed = 0.0
 
-    def report(self, message: str) -> None:
+    def report(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
         if self.verbosity > 0:
-            self._emit(message)
+            self._emit(message, event=event, **fields)
 
-    def report_debug(self, message: str) -> None:
+    def report_debug(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
         if self.debug:
-            self._emit(f"debug {message}")
+            self._emit(f"debug {message}", event=event, **fields)
 
     def report_stage_duration(self, stage: str, stage_started: float) -> None:
+        duration = time.perf_counter() - stage_started
         self.report_debug(
-            f"stage={stage} duration={time.perf_counter() - stage_started:.3f}s"
+            f"stage={stage} duration={duration:.3f}s",
+            event="stage_duration",
+            stage=stage,
+            duration_seconds=duration,
         )
 
-    def _emit(self, message: str) -> None:
+    def report_error(self, stage: str, error: BaseException) -> None:
+        if self.json_logging:
+            self._emit(
+                str(error),
+                event="error",
+                stage=stage,
+                exception_type=type(error).__name__,
+                message=str(error),
+            )
+            return
+        print(f"error: {error}", file=sys.stderr)
+
+    def report_warning(self, message: str) -> None:
+        if self.json_logging:
+            self._emit(message, event="warning")
+            return
+        print(f"warning: {message}", file=sys.stderr)
+
+    def _emit(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
         elapsed = time.perf_counter() - self.started
+        if self.json_logging:
+            print(
+                json.dumps(
+                    {"event": event, "elapsed_seconds": elapsed, **fields},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+            return
         print(f"[+{elapsed:.3f}s] {message}", file=sys.stderr)
 
     def start_transcription(self) -> None:
@@ -186,13 +230,18 @@ class _VerboseProgress:
             processed_samples,
             total_samples,
             prefix="transcribe",
+            event="transcribe_progress",
         )
 
     def report_activity(self, event: AsrActivity) -> None:
         match event:
             case ScanStarted(total_samples=total_samples):
                 self.start_transcription()
-                self.report_debug(f"asr scan start total={total_samples} samples")
+                self.report_debug(
+                    f"asr scan start total={total_samples} samples",
+                    event="asr_scan_started",
+                    total_samples=total_samples,
+                )
             case ScanAdvanced(
                 processed_samples=processed_samples,
                 total_samples=total_samples,
@@ -201,29 +250,55 @@ class _VerboseProgress:
                     processed_samples,
                     total_samples,
                     prefix="debug asr scan",
+                    event="asr_scan_progress",
                 )
             case VadSegmentReady(index=index, start_sample=start_sample, sample_count=sample_count):
                 self.report_debug(
-                    f"asr vad segment={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s"
+                    f"asr vad segment={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s",
+                    event="asr_vad_segment_ready",
+                    index=index,
+                    start_seconds=start_sample / SAMPLE_RATE,
+                    audio_seconds=sample_count / SAMPLE_RATE,
                 )
             case DecodeStarted(index=index, start_sample=start_sample, sample_count=sample_count):
                 self.decode_started = time.perf_counter()
                 self.report_debug(
-                    f"asr decode start chunk={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s"
+                    f"asr decode start chunk={index} audio={start_sample / SAMPLE_RATE:.2f}s+{sample_count / SAMPLE_RATE:.2f}s",
+                    event="asr_decode_started",
+                    index=index,
+                    start_seconds=start_sample / SAMPLE_RATE,
+                    audio_seconds=sample_count / SAMPLE_RATE,
                 )
             case DecodeFinished(index=index, sample_count=sample_count):
                 elapsed = time.perf_counter() - self.decode_started
                 self.decode_elapsed += elapsed
                 audio_seconds = max(sample_count / SAMPLE_RATE, 1e-9)
                 self.report_debug(
-                    f"asr decode done chunk={index} elapsed={elapsed:.3f}s rtf={elapsed / audio_seconds:.3f}"
+                    f"asr decode done chunk={index} elapsed={elapsed:.3f}s rtf={elapsed / audio_seconds:.3f}",
+                    event="asr_decode_finished",
+                    index=index,
+                    audio_seconds=audio_seconds,
+                    decode_elapsed_seconds=elapsed,
+                    rtf=elapsed / audio_seconds,
                 )
             case LanguageReported(language=language):
-                self.report_debug(f"asr language reported={language}")
+                self.report_debug(
+                    f"asr language reported={language}",
+                    event="asr_language_reported",
+                    language=language,
+                )
             case WordCountUpdated(word_count=word_count):
-                self.report_debug(f"asr words={word_count}")
+                self.report_debug(
+                    f"asr words={word_count}",
+                    event="asr_word_count_updated",
+                    word_count=word_count,
+                )
             case ScanFinished(total_samples=total_samples):
-                self.report_debug(f"asr scan complete total={total_samples} samples")
+                self.report_debug(
+                    f"asr scan complete total={total_samples} samples",
+                    event="asr_scan_finished",
+                    total_samples=total_samples,
+                )
             case TranscriptionSummary(
                 voiced_samples=voiced_samples,
                 vad_segments=vad_segments,
@@ -244,7 +319,15 @@ class _VerboseProgress:
                             f"transcript_segments={transcript_segments}",
                             f"language={language}",
                         )
-                    )
+                    ),
+                    event="asr_summary",
+                    vad_segments=vad_segments,
+                    decode_chunks=decode_chunks,
+                    word_count=word_count,
+                    transcript_segments=transcript_segments,
+                    language=language,
+                    voiced_seconds=voiced_samples / SAMPLE_RATE,
+                    decoded_seconds=decoded_samples / SAMPLE_RATE,
                 )
                 self.report_debug(
                     " ".join(
@@ -255,7 +338,12 @@ class _VerboseProgress:
                             f"decode_elapsed={self.decode_elapsed:.3f}s",
                             f"decode_rtf={self.decode_elapsed / decoded_seconds:.3f}",
                         )
-                    )
+                    ),
+                    event="asr_timing",
+                    voiced_seconds=voiced_samples / SAMPLE_RATE,
+                    decoded_seconds=decoded_samples / SAMPLE_RATE,
+                    decode_elapsed_seconds=self.decode_elapsed,
+                    decode_rtf=self.decode_elapsed / decoded_seconds,
                 )
             case unreachable:
                 assert_never(unreachable)
@@ -266,6 +354,7 @@ class _VerboseProgress:
         total_samples: int,
         *,
         prefix: str,
+        event: str,
     ) -> None:
         percent = processed_samples * 100 // total_samples
         if percent <= self.last_percent:
@@ -292,7 +381,16 @@ class _VerboseProgress:
                 f"eta={eta:.2f}s",
             )
         )
-        self.report(message)
+        self.report(
+            message,
+            event=event,
+            percent=percent,
+            audio_seconds=processed_seconds,
+            audio_total_seconds=total_seconds,
+            transcription_elapsed_seconds=elapsed,
+            rtf=rtf,
+            eta_seconds=eta,
+        )
 
 
 class _Parser(argparse.ArgumentParser):
@@ -349,6 +447,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="write internal diagnostics and unexpected-error tracebacks to stderr",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=("text", "json"),
+        default="text",
+        help="format diagnostic output on stderr",
     )
     parser.add_argument(
         "--version",
@@ -452,11 +556,23 @@ def _run(
     model_dir = namespace.model_dir
     debug = namespace.debug
     verbosity = max(namespace.verbose, int(debug))
+    json_logging = namespace.log_format == "json"
     started = time.perf_counter()
-    progress = _VerboseProgress(verbosity=verbosity, debug=debug, started=started)
+    progress = _VerboseProgress(
+        verbosity=verbosity,
+        debug=debug,
+        json_logging=json_logging,
+        started=started,
+    )
     stage = "validate"
     progress.report_debug(
-        f"configuration media={media} outdir={outdir} model_dir={model_dir} verbosity={namespace.verbose}"
+        f"configuration media={media} outdir={outdir} model_dir={model_dir} verbosity={namespace.verbose}",
+        event="configuration",
+        media_path=str(media),
+        outdir_path=str(outdir) if outdir is not None else None,
+        model_dir_path=str(model_dir) if model_dir is not None else None,
+        verbosity=namespace.verbose,
+        log_format=namespace.log_format,
     )
 
     try:
@@ -465,11 +581,11 @@ def _run(
         paths = _output_paths(media, outdir, output, cwd)
     except (AudioEnvironmentError, OutputPathError) as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return ENVIRONMENT_ERROR
     except (argparse.ArgumentTypeError, CliRuntimeError) as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return USAGE_OR_RUNTIME_ERROR
     except Exception as error:  # noqa: BROAD_EXCEPT_OK
         if debug:
@@ -477,23 +593,42 @@ def _run(
             return USAGE_OR_RUNTIME_ERROR
         raise
 
-    progress.report(f"input path={media}")
-    progress.report(f"output json={paths.json_path} txt={paths.txt_path}")
+    progress.report(f"input path={media}", event="input", media_path=str(media))
+    progress.report(
+        f"output json={paths.json_path} txt={paths.txt_path}",
+        event="output_paths",
+        json_path=str(paths.json_path),
+        txt_path=str(paths.txt_path),
+    )
     transcript: Transcript | None = None
     try:
         stage = "normalize"
         stage_started = time.perf_counter()
-        progress.report("normalize start")
+        progress.report("normalize start", event="stage_started", stage=stage)
         with _normalize_media(media) as prepared:
-            progress.report(f"normalize complete duration={prepared.duration:.2f}s")
-            progress.report_debug(f"ffmpeg argv={shlex.join(ffmpeg_argv(media, prepared.path))}")
-            progress.report_debug(f"normalized_wav={prepared.path}")
+            progress.report(
+                f"normalize complete duration={prepared.duration:.2f}s",
+                event="audio_ready",
+                audio_seconds=prepared.duration,
+                sample_count=prepared.sample_count,
+                sample_rate=SAMPLE_RATE,
+            )
+            progress.report_debug(
+                f"ffmpeg argv={shlex.join(ffmpeg_argv(media, prepared.path))}",
+                event="ffmpeg_invocation",
+                argv=list(ffmpeg_argv(media, prepared.path)),
+            )
+            progress.report_debug(
+                f"normalized_wav={prepared.path}",
+                event="normalized_audio_path",
+                wav_path=str(prepared.path),
+            )
             progress.report_stage_duration(stage, stage_started)
             stage = "models"
             stage_started = time.perf_counter()
-            progress.report("models resolve start")
+            progress.report("models resolve start", event="stage_started", stage=stage)
             bundle = _resolve_bundle(model_dir)
-            progress.report("models resolve complete")
+            progress.report("models resolve complete", event="stage_completed", stage=stage)
             _report_bundle_debug(
                 progress,
                 bundle,
@@ -502,19 +637,19 @@ def _run(
             progress.report_stage_duration(stage, stage_started)
             stage = "recognizer"
             stage_started = time.perf_counter()
-            progress.report("recognizer initialize start")
+            progress.report("recognizer initialize start", event="stage_started", stage=stage)
             recognizer = _make_recognizer(bundle)
-            progress.report("recognizer initialize complete")
+            progress.report("recognizer initialize complete", event="stage_completed", stage=stage)
             progress.report_stage_duration(stage, stage_started)
             stage = "vad"
             stage_started = time.perf_counter()
-            progress.report("VAD initialize start")
+            progress.report("VAD initialize start", event="stage_started", stage=stage)
             vad = _make_vad(bundle)
-            progress.report("VAD initialize complete")
+            progress.report("VAD initialize complete", event="stage_completed", stage=stage)
             progress.report_stage_duration(stage, stage_started)
             stage = "transcribe"
             stage_started = time.perf_counter()
-            progress.report("transcribe start")
+            progress.report("transcribe start", event="stage_started", stage=stage)
             progress.start_transcription()
             if debug:
                 if _transcribe_with_activity is not None:
@@ -579,7 +714,13 @@ def _run(
                         vad=vad,
                     )
                     )
-            progress.report(f"transcribe complete language={transcript.language} segments={len(transcript.segments)}")
+            progress.report(
+                f"transcribe complete language={transcript.language} segments={len(transcript.segments)}",
+                event="transcription_completed",
+                language=transcript.language,
+                segment_count=len(transcript.segments),
+                word_count=len(transcript.text.split()),
+            )
             progress.report_stage_duration(stage, stage_started)
     except (
         AudioEnvironmentError,
@@ -588,11 +729,11 @@ def _run(
         OutputWriteError,
     ) as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return ENVIRONMENT_ERROR
     except (argparse.ArgumentTypeError, CliRuntimeError, TranscriptionError) as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return USAGE_OR_RUNTIME_ERROR
     except Exception as error:  # noqa: BROAD_EXCEPT_OK
         if debug:
@@ -605,23 +746,26 @@ def _run(
             stage,
             CliRuntimeError("transcription decode failed: no transcript produced"),
         )
-        _print_error(CliRuntimeError("transcription decode failed: no transcript produced"))
+        progress.report_error(
+            stage,
+            CliRuntimeError("transcription decode failed: no transcript produced"),
+        )
         return USAGE_OR_RUNTIME_ERROR
 
     try:
         stage = "write"
         stage_started = time.perf_counter()
-        progress.report("write outputs start")
+        progress.report("write outputs start", event="stage_started", stage=stage)
         _write_outputs(transcript, paths)
-        progress.report("write outputs complete")
+        progress.report("write outputs complete", event="stage_completed", stage=stage)
         progress.report_stage_duration(stage, stage_started)
     except OutputWriteError as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return ENVIRONMENT_ERROR
     except CliRuntimeError as error:
         _report_failure(progress, stage, error)
-        _print_error(error)
+        progress.report_error(stage, error)
         return USAGE_OR_RUNTIME_ERROR
     except Exception as error:  # noqa: BROAD_EXCEPT_OK
         if debug:
@@ -630,9 +774,9 @@ def _run(
         raise
 
     if not transcript.segments:
-        print("warning: no speech detected", file=sys.stderr)
+        progress.report_warning("no speech detected")
     if verbosity > 0:
-        _print_progress(transcript, started)
+        _print_progress(progress, transcript)
     print(paths.json_path)
     print(paths.txt_path)
     return SUCCESS
@@ -726,7 +870,11 @@ def _report_bundle_debug(
     *,
     source: str,
 ) -> None:
-    progress.report_debug(f"model source={source}")
+    progress.report_debug(
+        f"model source={source}",
+        event="model_source",
+        source=source,
+    )
     for name, path in (
         ("encoder", bundle.encoder),
         ("decoder", bundle.decoder),
@@ -738,7 +886,13 @@ def _report_bundle_debug(
             size = path.stat().st_size
         except OSError:
             size = "unavailable"
-        progress.report_debug(f"model asset={name} path={path} size={size}")
+        progress.report_debug(
+            f"model asset={name} path={path} size={size}",
+            event="model_asset",
+            asset_name=name,
+            asset_path=str(path),
+            size_bytes=size if isinstance(size, int) else None,
+        )
 
 
 def _report_failure(
@@ -746,7 +900,12 @@ def _report_failure(
     stage: str,
     error: BaseException,
 ) -> None:
-    progress.report_debug(f"failure stage={stage} exception={type(error).__name__}")
+    progress.report_debug(
+        f"failure stage={stage} exception={type(error).__name__}",
+        event="failure",
+        stage=stage,
+        exception_type=type(error).__name__,
+    )
 
 
 def _print_debug_traceback(
@@ -755,14 +914,26 @@ def _print_debug_traceback(
     error: Exception,
 ) -> None:
     _report_failure(progress, stage, error)
-    _print_error(error)
+    progress.report_error(stage, error)
+    if progress.json_logging:
+        formatted_traceback = traceback.format_exc()
+        progress.report_debug(
+            formatted_traceback,
+            event="traceback",
+            stage=stage,
+            exception_type=type(error).__name__,
+            traceback=formatted_traceback,
+        )
+        return
     traceback.print_exc(file=sys.stderr)
 
 
-def _print_progress(transcript: Transcript, started: float) -> None:
-    elapsed = max(time.perf_counter() - started, 1e-9)
+def _print_progress(progress: _VerboseProgress, transcript: Transcript) -> None:
+    elapsed = max(time.perf_counter() - progress.started, 1e-9)
     rtf = elapsed / max(transcript.duration, 1e-9)
-    print(
+    progress.report(
         f"complete duration={transcript.duration:.2f}s rtf={rtf:.3f}",
-        file=sys.stderr,
+        event="completed",
+        audio_seconds=transcript.duration,
+        rtf=rtf,
     )
