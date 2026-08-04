@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from model_helpers import (
+from .model_helpers import (
     PARAKEET_NAMES,
     REPO_ID,
     SILERO_RELEASE_URL,

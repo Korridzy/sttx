@@ -28,6 +28,9 @@ dev = [
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.basedpyright]
+extraPaths = ["src"]
+
 [tool.pytest.ini_options]
 markers = [
     "integration: tests that require current native packages, models, or network access",
