@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from real_pipeline_artifacts import JsonValue
+from .real_pipeline_artifacts import JsonValue
 
 STTX_BIN: Final = Path(sys.executable).with_name("sttx")
 ENV_UNSET: Final = (
