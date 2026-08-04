@@ -4,13 +4,13 @@ import argparse
 import json
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
 import pytest
 
-from sttx.audio import AudioEnvironmentError, PreparedAudio
+from sttx.audio import AudioEnvironmentError
 from sttx.asr_events import (
     ActivityCallback,
     DecodeFinished,
@@ -25,6 +25,7 @@ from sttx.asr_events import (
 )
 from sttx.model import ModelBundle, ModelEnvironmentError
 from sttx.output import OutputPathError, OutputPaths, Segment, Transcript, write_outputs
+from sttx.cli import RunnerDependencies
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +78,33 @@ def _transcript(text: str = "Привет мир") -> Transcript:
         language="ru",
         duration=1.25,
         segments=(Segment(id=0, start=0.0, end=1.25, text=text),) if text else (),
+    )
+
+
+def _fake_transcribe(
+    _audio: FakePreparedAudio,
+    *,
+    recognizer: FakeRecognizer,
+    vad: FakeVad,
+    progress: Callable[[int, int], None] | None = None,
+    activity: ActivityCallback | None = None,
+) -> Transcript:
+    del recognizer, vad, progress, activity
+    return _transcript()
+
+
+def _fake_dependencies(
+    tmp_path: Path,
+) -> RunnerDependencies[FakePreparedAudio, FakeRecognizer, FakeVad]:
+    return RunnerDependencies(
+        normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        make_recognizer=FakeRecognizer,
+        make_vad=FakeVad,
+        transcribe=_fake_transcribe,
     )
 
 
@@ -136,14 +164,7 @@ def test_output_precedence_and_exact_paths(
     # When: the runner resolves output paths before acquiring models.
     exit_code = run(
         [str(media), "-o", "episode", "-d", "relative", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _dependencies=_fake_dependencies(tmp_path),
         _output_paths=capture_paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -170,7 +191,7 @@ def test_stdout_contains_only_final_paths(
     events: list[str] = []
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
 
-    def normalize(path: Path) -> PreparedAudio:
+    def normalize(path: Path) -> FakePreparedAudio:
         events.append(f"normalize:{path.name}")
         return prepared
 
@@ -187,12 +208,14 @@ def test_stdout_contains_only_final_paths(
         return FakeVad(model_bundle)
 
     def transcribe(
-        audio: PreparedAudio,
+        audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, progress, activity
         assert audio is prepared
         prepared.cleanup_seen_after_transcription = prepared.cleaned
         events.append("transcribe")
@@ -211,14 +234,18 @@ def test_stdout_contains_only_final_paths(
         events.append(f"write:{transcript.text}")
         assert output == paths
 
+    dependencies = RunnerDependencies(
+        normalize_media=normalize,
+        resolve_bundle=resolve,
+        make_recognizer=make_recognizer,
+        make_vad=make_vad,
+        transcribe=transcribe,
+    )
+
     # When: the dependency-injectable runner completes.
     exit_code = run(
         [str(media), "-o", "episode", "-d", str(tmp_path), "--model-dir", str(tmp_path)],
-        _normalize_media=normalize,
-        _resolve_bundle=resolve,
-        _make_recognizer=make_recognizer,
-        _make_vad=make_vad,
-        _transcribe=transcribe,
+        _dependencies=dependencies,
         _output_paths=output_paths,
         _write_outputs=write_outputs,
         _cwd=tmp_path,
@@ -256,14 +283,7 @@ def test_verbose_prints_progress_to_stderr(
     # When: verbose mode is enabled.
     exit_code = run(
         [str(media), "--verbose", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _dependencies=_fake_dependencies(tmp_path),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -302,13 +322,14 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
 
     def transcribe(
-        _audio: PreparedAudio,
+        _audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
         progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, activity
         assert progress is not None
         progress(8_000, 16_000)
         progress(16_000, 16_000)
@@ -316,14 +337,7 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
 
     exit_code = run(
         [str(media), "-vv", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe_with_progress=transcribe,
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -349,13 +363,14 @@ def test_json_log_format_emits_structured_progress_and_preserves_stdout(
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
 
     def transcribe(
-        _audio: PreparedAudio,
+        _audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
         progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, activity
         assert progress is not None
         progress(8_000, 16_000)
         progress(16_000, 16_000)
@@ -364,14 +379,7 @@ def test_json_log_format_emits_structured_progress_and_preserves_stdout(
     # When: JSON Lines logging is requested with live transcription progress.
     exit_code = run(
         [str(media), "-vv", "--log-format", "json", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe_with_progress=transcribe,
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -432,13 +440,15 @@ def test_debug_prints_internal_diagnostics_to_stderr(
     activity_calls: list[bool] = []
 
     def transcribe_with_activity(
-        _audio: PreparedAudio,
+        _audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
-        activity: ActivityCallback,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, progress
+        assert activity is not None
         activity(ScanStarted(total_samples=16_000))
         activity(ScanAdvanced(processed_samples=8_000, total_samples=16_000))
         activity(VadSegmentReady(index=1, start_sample=0, sample_count=8_000))
@@ -465,15 +475,14 @@ def test_debug_prints_internal_diagnostics_to_stderr(
     # When: debug mode is enabled.
     exit_code = run(
         [str(media), "--debug", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=prepared_path,
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            normalize_media=lambda _path: FakePreparedAudio(
+                path=prepared_path,
+                sample_count=16_000,
+            ),
+            transcribe=transcribe_with_activity,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
-        _transcribe_with_activity=transcribe_with_activity,
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -516,14 +525,7 @@ def test_debug_prints_traceback_for_unexpected_write_failure(
     # When: debug mode handles the failure boundary.
     exit_code = run(
         [str(media), "--debug", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _dependencies=_fake_dependencies(tmp_path),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=broken_write,
         _cwd=tmp_path,
@@ -563,7 +565,10 @@ def test_run_validates_input_and_output_before_bundle_acquisition(
     # When: the runner sees the missing input.
     exit_code = run(
         [str(media), "--output", "episode"],
-        _resolve_bundle=forbidden_resolve,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            resolve_bundle=forbidden_resolve,
+        ),
         _output_paths=forbidden_paths,
         _cwd=tmp_path,
     )
@@ -593,7 +598,10 @@ def test_invalid_output_names_exit_one_before_model_load(
     # When: output validation fails.
     exit_code = run(
         [str(media), "--output", "bad.json"],
-        _resolve_bundle=forbidden_resolve,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            resolve_bundle=forbidden_resolve,
+        ),
         _cwd=tmp_path,
     )
 
@@ -616,17 +624,24 @@ def test_silence_warns_and_exits_zero(
     paths = OutputPaths(json_path=tmp_path / "silent.json", txt_path=tmp_path / "silent.txt")
     writes: list[Transcript] = []
 
+    def transcribe_silence(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, progress, activity
+        return _transcript(text="")
+
     # When: the runner transcribes silence.
     exit_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            transcribe=transcribe_silence,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(text=""),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda transcript, _paths: writes.append(transcript),
         _cwd=tmp_path,
@@ -666,11 +681,7 @@ def test_environment_error_table_exits_one(
     # When: the error reaches the CLI boundary.
     exit_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=raise_error,
+        _dependencies=replace(_fake_dependencies(tmp_path), resolve_bundle=raise_error),
         _cwd=tmp_path,
     )
 
@@ -704,50 +715,44 @@ def test_argparse_and_transcription_errors_exit_two(
     media.write_bytes(b"media")
 
     def raise_transcription(
-        _audio: PreparedAudio,
+        _audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, progress, activity
         raise TranscriptionError("decode failed")
+
+    def raise_recognizer(model_bundle: ModelBundle) -> FakeRecognizer:
+        del model_bundle
+        raise argparse.ArgumentTypeError("recognizer construction failed")
+
+    def raise_vad(model_bundle: ModelBundle) -> FakeVad:
+        del model_bundle
+        raise argparse.ArgumentTypeError("VAD construction failed")
 
     # When: recognizer construction, VAD construction, and decoding fail.
     recognizer_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda _model_bundle: (_ for _ in ()).throw(
-            argparse.ArgumentTypeError("recognizer construction failed")
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            make_recognizer=raise_recognizer,
         ),
         _cwd=tmp_path,
     )
     vad_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda _model_bundle: (_ for _ in ()).throw(
-            argparse.ArgumentTypeError("VAD construction failed")
-        ),
+        _dependencies=replace(_fake_dependencies(tmp_path), make_vad=raise_vad),
         _cwd=tmp_path,
     )
     transcription_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            transcribe=raise_transcription,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=raise_transcription,
         _cwd=tmp_path,
     )
 
@@ -785,14 +790,7 @@ def test_output_failure_cleans_staging(
     # When: real output writing fails after staging files are created.
     exit_code = run(
         [str(media), "--output", "episode", "--outdir", str(outdir), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _dependencies=_fake_dependencies(tmp_path),
         _write_outputs=write_outputs,
         _cwd=tmp_path,
     )

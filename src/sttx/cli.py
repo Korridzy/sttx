@@ -12,8 +12,8 @@ import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import FrameType
-from typing import NoReturn, Protocol, TypeVar, assert_never
+from types import FrameType, TracebackType
+from typing import Generic, NoReturn, Protocol, Self, TypeVar, assert_never
 
 import sherpa_onnx
 
@@ -62,55 +62,57 @@ ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
 JsonLogField = str | int | float | bool | None | list[str]
+PreparedAudioT = TypeVar("PreparedAudioT", bound="_PreparedAudioResource")
 RecognizerT = TypeVar("RecognizerT")
 VadT = TypeVar("VadT")
-RecognizerT_co = TypeVar("RecognizerT_co", covariant=True)
-VadT_co = TypeVar("VadT_co", covariant=True)
+PreparedAudioT_contra = TypeVar(
+    "PreparedAudioT_contra",
+    bound="_PreparedAudioResource",
+    contravariant=True,
+)
 RecognizerT_contra = TypeVar("RecognizerT_contra", contravariant=True)
 VadT_contra = TypeVar("VadT_contra", contravariant=True)
 
 
-class RecognizerFactory(Protocol[RecognizerT_co]):
-    def __call__(self, bundle: ModelBundle, /) -> RecognizerT_co: ...
+class _PreparedAudioResource(Protocol):
+    path: Path
+    sample_count: int
+
+    @property
+    def duration(self) -> float: ...
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool: ...
 
 
-class VadFactory(Protocol[VadT_co]):
-    def __call__(self, bundle: ModelBundle, /) -> VadT_co: ...
-
-
-class TranscribeFn(Protocol[RecognizerT_contra, VadT_contra]):
+class _Transcriber(
+    Protocol[PreparedAudioT_contra, RecognizerT_contra, VadT_contra],
+):
     def __call__(
         self,
-        audio: PreparedAudio,
+        audio: PreparedAudioT_contra,
         /,
         *,
         recognizer: RecognizerT_contra,
         vad: VadT_contra,
+        progress: ProgressCallback | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript: ...
 
 
-class ProgressTranscribeFn(Protocol[RecognizerT_contra, VadT_contra]):
-    def __call__(
-        self,
-        audio: PreparedAudio,
-        /,
-        *,
-        recognizer: RecognizerT_contra,
-        vad: VadT_contra,
-        progress: ProgressCallback,
-    ) -> Transcript: ...
-
-
-class ActivityTranscribeFn(Protocol[RecognizerT_contra, VadT_contra]):
-    def __call__(
-        self,
-        audio: PreparedAudio,
-        /,
-        *,
-        recognizer: RecognizerT_contra,
-        vad: VadT_contra,
-        activity: ActivityCallback,
-    ) -> Transcript: ...
+@dataclass(frozen=True, slots=True)
+class RunnerDependencies(Generic[PreparedAudioT, RecognizerT, VadT]):
+    normalize_media: Callable[[Path], PreparedAudioT]
+    resolve_bundle: Callable[[Path | None], ModelBundle]
+    make_recognizer: Callable[[ModelBundle], RecognizerT]
+    make_vad: Callable[[ModelBundle], VadT]
+    transcribe: _Transcriber[PreparedAudioT, RecognizerT, VadT]
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,26 +464,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _default_make_recognizer(
-    bundle: ModelBundle,
-) -> Recognizer[RecognitionStream, RecognitionResult]:
-    return _make_recognizer_from_bundle(bundle)
-
-
-def _default_make_vad(bundle: ModelBundle) -> VoiceActivityDetector:
-    return _make_vad_from_bundle(bundle)
-
-
 def run(
     argv: Sequence[str] | None = None,
     *,
-    _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
-    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle_cancellable,
-    _make_recognizer: RecognizerFactory[RecognizerT] = _default_make_recognizer,
-    _make_vad: VadFactory[VadT] = _default_make_vad,
-    _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
-    _transcribe_with_progress: ProgressTranscribeFn[RecognizerT, VadT] | None = None,
-    _transcribe_with_activity: ActivityTranscribeFn[RecognizerT, VadT] | None = None,
+    _dependencies: RunnerDependencies[PreparedAudioT, RecognizerT, VadT] | None = None,
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
     _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
     _cwd: Path | None = None,
@@ -504,15 +490,16 @@ def run(
         if install_handlers:
             for signum in (signal.SIGINT, signal.SIGTERM):
                 previous_handlers[signum] = signal.signal(signum, request_shutdown)
+        if _dependencies is None:
+            return _run_production(
+                argv,
+                _output_paths=_output_paths,
+                _write_outputs=_write_outputs,
+                _cwd=_cwd,
+            )
         return _run(
             argv,
-            _normalize_media=_normalize_media,
-            _resolve_bundle=_resolve_bundle,
-            _make_recognizer=_make_recognizer,
-            _make_vad=_make_vad,
-            _transcribe=_transcribe,
-            _transcribe_with_progress=_transcribe_with_progress,
-            _transcribe_with_activity=_transcribe_with_activity,
+            _dependencies=_dependencies,
             _output_paths=_output_paths,
             _write_outputs=_write_outputs,
             _cwd=_cwd,
@@ -528,13 +515,7 @@ def run(
 def _run(
     argv: Sequence[str] | None = None,
     *,
-    _normalize_media: Callable[[Path], PreparedAudio] = normalize_media,
-    _resolve_bundle: Callable[[Path | None], ModelBundle] = resolve_bundle_cancellable,
-    _make_recognizer: RecognizerFactory[RecognizerT] = _default_make_recognizer,
-    _make_vad: VadFactory[VadT] = _default_make_vad,
-    _transcribe: TranscribeFn[RecognizerT, VadT] = transcribe,
-    _transcribe_with_progress: ProgressTranscribeFn[RecognizerT, VadT] | None = None,
-    _transcribe_with_activity: ActivityTranscribeFn[RecognizerT, VadT] | None = None,
+    _dependencies: RunnerDependencies[PreparedAudioT, RecognizerT, VadT],
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
     _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
     _cwd: Path | None = None,
@@ -605,7 +586,7 @@ def _run(
         stage = "normalize"
         stage_started = time.perf_counter()
         progress.report("normalize start", event="stage_started", stage=stage)
-        with _normalize_media(media) as prepared:
+        with _dependencies.normalize_media(media) as prepared:
             progress.report(
                 f"normalize complete duration={prepared.duration:.2f}s",
                 event="audio_ready",
@@ -627,7 +608,7 @@ def _run(
             stage = "models"
             stage_started = time.perf_counter()
             progress.report("models resolve start", event="stage_started", stage=stage)
-            bundle = _resolve_bundle(model_dir)
+            bundle = _dependencies.resolve_bundle(model_dir)
             progress.report("models resolve complete", event="stage_completed", stage=stage)
             _report_bundle_debug(
                 progress,
@@ -638,82 +619,32 @@ def _run(
             stage = "recognizer"
             stage_started = time.perf_counter()
             progress.report("recognizer initialize start", event="stage_started", stage=stage)
-            recognizer = _make_recognizer(bundle)
+            recognizer = _dependencies.make_recognizer(bundle)
             progress.report("recognizer initialize complete", event="stage_completed", stage=stage)
             progress.report_stage_duration(stage, stage_started)
             stage = "vad"
             stage_started = time.perf_counter()
             progress.report("VAD initialize start", event="stage_started", stage=stage)
-            vad = _make_vad(bundle)
+            vad = _dependencies.make_vad(bundle)
             progress.report("VAD initialize complete", event="stage_completed", stage=stage)
             progress.report_stage_duration(stage, stage_started)
             stage = "transcribe"
             stage_started = time.perf_counter()
             progress.report("transcribe start", event="stage_started", stage=stage)
             progress.start_transcription()
-            if debug:
-                if _transcribe_with_activity is not None:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: _transcribe_with_activity(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                            activity=progress.report_activity,
-                        )
-                    )
-                elif _transcribe is transcribe:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: transcribe(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                            activity=progress.report_activity,
-                        )
-                    )
-                elif _transcribe_with_progress is not None:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: _transcribe_with_progress(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                            progress=progress.report_transcription,
-                        )
-                    )
-                else:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: _transcribe(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                        )
-                    )
-            elif verbosity > 1:
-                if _transcribe_with_progress is None:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: transcribe(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                            progress=progress.report_transcription,
-                        )
-                    )
-                else:
-                    transcript = _transcribe_with_error_boundary(
-                        lambda: _transcribe_with_progress(
-                            prepared,
-                            recognizer=recognizer,
-                            vad=vad,
-                            progress=progress.report_transcription,
-                        )
-                    )
-            else:
-                transcript = _transcribe_with_error_boundary(
-                    lambda: _transcribe(
-                        prepared,
-                        recognizer=recognizer,
-                        vad=vad,
-                    )
-                    )
+            transcription_progress = (
+                progress.report_transcription if verbosity > 1 and not debug else None
+            )
+            transcription_activity = progress.report_activity if debug else None
+            transcript = _transcribe_with_error_boundary(
+                lambda: _dependencies.transcribe(
+                    prepared,
+                    recognizer=recognizer,
+                    vad=vad,
+                    progress=transcription_progress,
+                    activity=transcription_activity,
+                )
+            )
             progress.report(
                 f"transcribe complete language={transcript.language} segments={len(transcript.segments)}",
                 event="transcription_completed",
@@ -848,6 +779,35 @@ def _make_vad_from_bundle(
         )
     except (OSError, RuntimeError, ValueError) as error:
         raise CliRuntimeError(f"VAD construction failed: {error}") from error
+
+
+_PRODUCTION_DEPENDENCIES: RunnerDependencies[
+    PreparedAudio,
+    Recognizer[RecognitionStream, RecognitionResult],
+    VoiceActivityDetector,
+] = RunnerDependencies(
+    normalize_media=normalize_media,
+    resolve_bundle=resolve_bundle_cancellable,
+    make_recognizer=_make_recognizer_from_bundle,
+    make_vad=_make_vad_from_bundle,
+    transcribe=transcribe,
+)
+
+
+def _run_production(
+    argv: Sequence[str] | None,
+    *,
+    _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths],
+    _write_outputs: Callable[[Transcript, OutputPaths], None],
+    _cwd: Path | None,
+) -> int:
+    return _run(
+        argv,
+        _dependencies=_PRODUCTION_DEPENDENCIES,
+        _output_paths=_output_paths,
+        _write_outputs=_write_outputs,
+        _cwd=_cwd,
+    )
 
 
 def _system_exit_code(error: SystemExit) -> int:
