@@ -9,19 +9,20 @@ from pathlib import Path
 import pytest
 from huggingface_hub import hf_hub_download
 
-from real_pipeline_artifacts import (
+from .real_pipeline_artifacts import (
     JsonValue,
     append_log,
     bundle_identity,
     copy_bundle,
     environment_identity,
+    json_mapping,
     sha256,
     snapshot_commit,
     task_artifacts,
     write_hash_manifest,
     write_json,
 )
-from real_pipeline_checks import (
+from .real_pipeline_checks import (
     pgrep_clean,
     prove_asr_hard_split,
     prove_model_dir_variants,
@@ -31,14 +32,14 @@ from real_pipeline_checks import (
     prove_warm_offline,
     stdout_paths,
 )
-from real_pipeline_media import (
+from .real_pipeline_media import (
     convert_media,
     read_transcript,
 )
-from real_pipeline_evidence_contract import assert_todo10_contract
-from real_pipeline_observability import write_vad_positive_continuous_wav
-from real_pipeline_runner import STTX_BIN, run_sttx, sanitized_env
-from real_pipeline_signals import prove_signal_barriers
+from .real_pipeline_evidence_contract import assert_todo10_contract
+from .real_pipeline_observability import write_vad_positive_continuous_wav
+from .real_pipeline_runner import STTX_BIN, run_sttx, sanitized_env
+from .real_pipeline_signals import prove_signal_barriers
 
 
 @pytest.mark.integration
@@ -110,7 +111,10 @@ def test_real_floating_pipeline_gate(
             "txt": str(txt_path),
             "check": asdict(check),
         }
-    evidence["commands"] = {**evidence["commands"], "direct_cli": format_results}
+    evidence["commands"] = {
+        **json_mapping(evidence["commands"], "commands"),
+        "direct_cli": format_results,
+    }
 
     bundle_dir = artifacts.root / "task-10-flat-bundle"
     evidence["flat_bundle"] = copy_bundle(bundle, bundle_dir)
@@ -128,7 +132,7 @@ def test_real_floating_pipeline_gate(
     prove_signal_barriers(tmp_path, cold, bundle_dir, signal_media, evidence)
 
     shutil.rmtree(wav_cache, ignore_errors=True)
-    cleanup = {
+    cleanup: dict[str, JsonValue] = {
         "qa_wav_cache_removed": not wav_cache.exists(),
         "qa_en_wav_deleted": not en_wav.exists(),
         "live_process_probe": {

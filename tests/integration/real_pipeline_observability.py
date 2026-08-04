@@ -8,9 +8,9 @@ from typing import Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from real_pipeline_artifacts import JsonValue
-from real_pipeline_media import SAMPLE_RATE, read_int16, write_int16
-from sttx.asr import MAX_CHUNK_SAMPLES, transcribe
+from .real_pipeline_artifacts import JsonValue
+from .real_pipeline_media import SAMPLE_RATE, read_int16, write_int16
+from sttx.asr import MAX_CHUNK_SAMPLES, VoiceActivityDetector, transcribe
 from sttx.audio import PreparedAudio
 from sttx.cli import _make_vad_from_bundle
 from sttx.model import ModelBundle
@@ -19,11 +19,20 @@ type FloatSamples = NDArray[np.float32]
 
 
 class BundleLike(Protocol):
-    encoder: Path
-    decoder: Path
-    joiner: Path
-    tokens: Path
-    silero: Path
+    @property
+    def encoder(self) -> Path: ...
+
+    @property
+    def decoder(self) -> Path: ...
+
+    @property
+    def joiner(self) -> Path: ...
+
+    @property
+    def tokens(self) -> Path: ...
+
+    @property
+    def silero(self) -> Path: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +168,7 @@ def observe_hard_split(wav_path: Path) -> dict[str, JsonValue]:
     }
 
 
-def _drain(vad) -> list[VadObservation]:
+def _drain(vad: VoiceActivityDetector) -> list[VadObservation]:
     observations: list[VadObservation] = []
     while not vad.empty():
         segment = vad.front
