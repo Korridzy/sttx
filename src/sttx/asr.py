@@ -36,7 +36,8 @@ ProgressCallback: TypeAlias = Callable[[int, int], None]
 
 
 class RecognitionStream(Protocol):
-    result: RecognitionResult
+    @property
+    def result(self) -> RecognitionResult: ...
 
     def accept_waveform(
         self,
@@ -46,11 +47,20 @@ class RecognitionStream(Protocol):
 
 
 class RecognitionResult(Protocol):
-    text: str
-    tokens: Sequence[str]
-    timestamps: Sequence[float]
-    durations: Sequence[float]
-    lang: str
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def tokens(self) -> Sequence[str]: ...
+
+    @property
+    def timestamps(self) -> Sequence[float]: ...
+
+    @property
+    def durations(self) -> Sequence[float]: ...
+
+    @property
+    def lang(self) -> str: ...
 
 
 StreamT = TypeVar("StreamT", bound=RecognitionStream)
@@ -64,8 +74,11 @@ class Recognizer(Protocol[StreamT, ResultT]):
 
 
 class VadSegment(Protocol):
-    start: int
-    samples: FloatSamples
+    @property
+    def start(self) -> int: ...
+
+    @property
+    def samples(self) -> FloatSamples: ...
 
 
 class VoiceActivityDetector(Protocol):

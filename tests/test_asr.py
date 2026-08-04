@@ -61,11 +61,20 @@ class FakeVad:
 @dataclass(slots=True)  # noqa: MUTABLE_OK
 class FakeStream:
     samples: FloatSamples | None = None
-    result: FakeResult | None = None
+    _result: FakeResult | None = None
 
     def accept_waveform(self, sample_rate: int, samples: FloatSamples) -> None:
         assert sample_rate == SAMPLE_RATE
         self.samples = samples
+
+    @property
+    def result(self) -> FakeResult:
+        assert self._result is not None
+        return self._result
+
+    @result.setter
+    def result(self, value: FakeResult) -> None:
+        self._result = value
 
 
 @dataclass(slots=True)  # noqa: MUTABLE_OK
