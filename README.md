@@ -65,7 +65,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [--version] media
+sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -88,6 +88,11 @@ sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [
   stage timings, live ASR scan/VAD/decode activity, reported language, word
   counts, and an aggregate ASR summary. It includes a traceback for unexpected
   failures and never prints transcript content.
+- `--log-format {text,json}` — format enabled stderr diagnostics as human text
+  (the default) or JSON Lines. JSON records have stable `event` and
+  `elapsed_seconds` fields plus event-specific data such as `stage`,
+  `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v`, `-vv`, or
+  `--debug` for machine-consumable pipeline telemetry.
 - `--version` — print `sttx 0.1.0` and exit.
 
 There is no language option: the model reports a language when available and
@@ -101,6 +106,11 @@ stderr: argument usage/errors, environment or runtime errors, the no-speech
 warning, optional verbose stage and live-progress messages, and debug
 diagnostics. `--help` and `--version` are the usual argparse exceptions: their
 informational text is printed to stdout and they exit successfully.
+
+With `--log-format json`, enabled diagnostic records are one JSON object per
+stderr line. Successful invocations still print only the two output paths to
+stdout. Argument usage, `--help`, `--version`, and signal cancellation retain
+their normal argparse or cancellation text behavior.
 
 The process exits with:
 
