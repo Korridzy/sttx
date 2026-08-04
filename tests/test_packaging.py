@@ -171,7 +171,7 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
     assert package_metadata["License-Expression"] == "Apache-2.0"
     assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
-    assert sorted(package_metadata.get_all("Requires-Dist")) == [
+    assert sorted(package_metadata.get_all("Requires-Dist") or []) == [
         "huggingface-hub",
         "numpy",
         "sherpa-onnx",
