@@ -65,7 +65,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [--log-format {text,json}] [--version] media
+sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -76,13 +76,12 @@ sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [
   resolved from the current directory; the default is `./transcriptions`.
 - `--model-dir MODEL_DIR` — use a local, offline model bundle instead of
   acquiring model assets.
-- `-v`, `--verbose` — write elapsed-time pipeline stage messages to stderr,
-  including audio preparation, model resolution, initialization,
-  transcription, output writing, and a final duration/real-time-factor
-  summary.
-- `-vv` (or `--verbose --verbose`) — also write live transcription progress,
-  including processed audio position, real-time factor, and estimated time
-  remaining.
+- `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
+  transcription progress to stderr. Text logs include a 20-character ASCII
+  bar, processed audio position, real-time factor, estimated time remaining,
+  and a final duration/real-time-factor summary. In an interactive terminal,
+  an elapsed-time prefix and progress bar redraw in place ten times per second;
+  redirected stderr receives readable line-oriented progress snapshots.
 - `--debug` — enable pipeline progress plus diagnostic details on stderr:
   ffmpeg arguments, the normalized WAV path, model source and asset paths/sizes,
   stage timings, live ASR scan/VAD/decode activity, reported language, word
@@ -91,8 +90,8 @@ sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v | -vv] [--debug] [
 - `--log-format {text,json}` — format enabled stderr diagnostics as human text
   (the default) or JSON Lines. JSON records have stable `event` and
   `elapsed_seconds` fields plus event-specific data such as `stage`,
-  `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v`, `-vv`, or
-  `--debug` for machine-consumable pipeline telemetry.
+  `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
+  for machine-consumable pipeline telemetry.
 - `--version` — print `sttx 0.1.0` and exit.
 
 There is no language option: the model reports a language when available and
