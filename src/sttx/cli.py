@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from _thread import LockType
 import argparse
 import json
 import os
@@ -61,6 +62,8 @@ SUCCESS: int = 0
 ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
+PROGRESS_BAR_WIDTH: int = 20
+LIVE_PROGRESS_TICK_SECONDS: float = 0.1
 JsonLogField = str | int | float | bool | None | list[str]
 PreparedAudioT = TypeVar("PreparedAudioT", bound="_PreparedAudioResource")
 RecognizerT = TypeVar("RecognizerT")
@@ -150,6 +153,11 @@ class _VerboseProgress:
         "transcription_started",
         "decode_started",
         "decode_elapsed",
+        "live_progress_width",
+        "live_progress_lock",
+        "live_progress_stop",
+        "live_progress_thread",
+        "live_progress_body",
     )
     verbosity: int
     debug: bool
@@ -160,6 +168,11 @@ class _VerboseProgress:
     transcription_started: float
     decode_started: float
     decode_elapsed: float
+    live_progress_width: int
+    live_progress_lock: LockType
+    live_progress_stop: threading.Event | None
+    live_progress_thread: threading.Thread | None
+    live_progress_body: str | None
 
     def __init__(
         self,
@@ -177,6 +190,11 @@ class _VerboseProgress:
         self.transcription_started = started
         self.decode_started = started
         self.decode_elapsed = 0.0
+        self.live_progress_width = 0
+        self.live_progress_lock = threading.Lock()
+        self.live_progress_stop = None
+        self.live_progress_thread = None
+        self.live_progress_body = None
 
     def report(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
         if self.verbosity > 0:
@@ -196,6 +214,7 @@ class _VerboseProgress:
         )
 
     def report_error(self, stage: str, error: BaseException) -> None:
+        self._finish_live_progress()
         if self.json_logging:
             self._emit(
                 str(error),
@@ -208,12 +227,14 @@ class _VerboseProgress:
         print(f"error: {error}", file=sys.stderr)
 
     def report_warning(self, message: str) -> None:
+        self._finish_live_progress()
         if self.json_logging:
             self._emit(message, event="warning")
             return
         print(f"warning: {message}", file=sys.stderr)
 
     def _emit(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
+        self._finish_live_progress()
         elapsed = time.perf_counter() - self.started
         if self.json_logging:
             print(
@@ -228,12 +249,69 @@ class _VerboseProgress:
             return
         print(f"[+{_format_duration(elapsed)}] {message}", file=sys.stderr)
 
+    def _finish_live_progress(self) -> None:
+        with self.live_progress_lock:
+            stop = self.live_progress_stop
+            thread = self.live_progress_thread
+            self.live_progress_stop = None
+            self.live_progress_thread = None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread.ident is not None:
+            thread.join()
+        with self.live_progress_lock:
+            if self.live_progress_width > 0:
+                print(file=sys.stderr)
+                self.live_progress_width = 0
+            self.live_progress_body = None
+
     def start_transcription(self) -> None:
+        self._finish_live_progress()
         self.transcription_started = time.perf_counter()
         self.last_percent = 0
         self.last_progress_at = None
         self.decode_started = self.transcription_started
         self.decode_elapsed = 0.0
+        if self.verbosity <= 0 or self.debug or self.json_logging or not sys.stderr.isatty():
+            return
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=lambda: self._spin_live_progress(stop),
+            daemon=False,
+        )
+        with self.live_progress_lock:
+            self.live_progress_stop = stop
+            self.live_progress_thread = thread
+        thread.start()
+
+    def stop_transcription(self) -> None:
+        self._finish_live_progress()
+
+    def _spin_live_progress(self, stop: threading.Event) -> None:
+        while not stop.wait(LIVE_PROGRESS_TICK_SECONDS):
+            with self.live_progress_lock:
+                if self.live_progress_stop is stop:
+                    self._tick_live_progress_locked()
+
+    def _tick_live_progress_locked(self) -> None:
+        if self.live_progress_body is None:
+            return
+        self._render_live_progress_locked()
+
+    def _update_live_progress(self, body: str) -> None:
+        with self.live_progress_lock:
+            self.live_progress_body = body
+            self._render_live_progress_locked()
+
+    def _render_live_progress_locked(self) -> None:
+        if self.live_progress_body is None:
+            return
+        elapsed = time.perf_counter() - self.started
+        message = f"[+{_format_duration(elapsed)}] {self.live_progress_body}"
+        padding = " " * max(self.live_progress_width - len(message), 0)
+        sys.stderr.write(f"\r{message}{padding}")
+        sys.stderr.flush()
+        self.live_progress_width = len(message)
 
     def report_transcription(self, processed_samples: int, total_samples: int) -> None:
         self._report_scan_progress(
@@ -383,14 +461,32 @@ class _VerboseProgress:
         total_seconds = total_samples / SAMPLE_RATE
         rtf = elapsed / processed_seconds
         eta = (total_seconds - processed_seconds) * rtf
-        message = " ".join(
+        progress_details = " ".join(
             (
-                f"{prefix} progress={percent}%",
                 f"audio={_format_duration(processed_seconds)}/{_format_duration(total_seconds)}",
                 f"rtf={rtf:.3f}",
                 f"eta={_format_duration(eta)}",
             )
         )
+        if not self.debug and not self.json_logging:
+            completed_units = percent * PROGRESS_BAR_WIDTH // 100
+            progress_bar = "#" * completed_units + "-" * (PROGRESS_BAR_WIDTH - completed_units)
+            if sys.stderr.isatty():
+                self._update_live_progress(
+                    " ".join(
+                        (
+                            f"[{progress_bar}]",
+                            f"{percent}%",
+                            f"{_format_duration(processed_seconds)}/{_format_duration(total_seconds)}",
+                            f"rtf={rtf:.3f}",
+                            f"eta={_format_duration(eta)}",
+                        )
+                    )
+                )
+                return
+            message = f"{prefix} [{progress_bar}] progress={percent}%\n  {progress_details}"
+        else:
+            message = f"{prefix} progress={percent}% {progress_details}"
         self.report(
             message,
             event=event,
@@ -451,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="count",
         default=0,
-        help="write stage progress to stderr; repeat for live transcription progress",
+        help="write stage and live transcription progress to stderr",
     )
     parser.add_argument(
         "--debug",
@@ -531,6 +627,8 @@ def _run(
     parser = build_parser()
     try:
         namespace = parser.parse_args(argv)
+        if namespace.verbose > 1:
+            raise CliRuntimeError("--verbose may be specified once")
     except CliRuntimeError as error:
         parser.print_usage(sys.stderr)
         _print_error(error)
@@ -639,20 +737,23 @@ def _run(
             stage = "transcribe"
             stage_started = time.perf_counter()
             progress.report("transcribe start", event="stage_started", stage=stage)
-            progress.start_transcription()
             transcription_progress = (
-                progress.report_transcription if verbosity > 1 and not debug else None
+                progress.report_transcription if verbosity > 0 and not debug else None
             )
             transcription_activity = progress.report_activity if debug else None
-            transcript = _transcribe_with_error_boundary(
-                lambda: _dependencies.transcribe(
-                    prepared,
-                    recognizer=recognizer,
-                    vad=vad,
-                    progress=transcription_progress,
-                    activity=transcription_activity,
+            try:
+                progress.start_transcription()
+                transcript = _transcribe_with_error_boundary(
+                    lambda: _dependencies.transcribe(
+                        prepared,
+                        recognizer=recognizer,
+                        vad=vad,
+                        progress=transcription_progress,
+                        activity=transcription_activity,
+                    )
                 )
-            )
+            finally:
+                progress.stop_transcription()
             progress.report(
                 f"transcribe complete language={transcript.language} segments={len(transcript.segments)}",
                 event="transcription_completed",
@@ -661,6 +762,9 @@ def _run(
                 word_count=len(transcript.text.split()),
             )
             progress.report_stage_duration(stage, stage_started)
+    except ShutdownRequested:
+        progress.stop_transcription()
+        raise
     except (
         AudioEnvironmentError,
         ModelEnvironmentError,

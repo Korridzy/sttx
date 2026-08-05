@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -133,11 +135,29 @@ def test_parser_contract() -> None:
     assert namespace.outdir == Path("results")
     assert namespace.model_dir == Path("models")
     assert namespace.verbose == 1
-    assert parser.parse_args(["media.mp4", "-vv"]).verbose == 2
     assert parser.parse_args(["media.mp4"]).debug is False
     assert parser.parse_args(["media.mp4", "--debug"]).debug is True
     assert parser.parse_args(["media.mp4"]).log_format == "text"
     assert parser.parse_args(["media.mp4", "--log-format", "json"]).log_format == "json"
+
+
+@pytest.mark.parametrize("arguments", (["-vv"], ["--verbose", "--verbose"]))
+def test_rejects_repeated_verbose_flag(
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+) -> None:
+    # Given: the public CLI entry point.
+    from sttx.cli import run
+
+    # When: verbose syntax is repeated.
+    exit_code = run(["media.mp4", *arguments])
+
+    # Then: the duplicate option is rejected before touching the pipeline.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "usage: sttx" in captured.err
+    assert captured.err.splitlines()[-1] == "error: --verbose may be specified once"
 
 
 def test_output_precedence_and_exact_paths(
@@ -321,7 +341,7 @@ def test_verbose_prints_progress_to_stderr(
     assert "complete duration=00:00:01.250 rtf=" in captured.err
 
 
-def test_double_verbose_prints_transcription_progress_to_stderr(
+def test_verbose_prints_transcription_progress_to_stderr(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -346,7 +366,7 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
         return _transcript()
 
     exit_code = run(
-        [str(media), "-vv", "--model-dir", str(tmp_path)],
+        [str(media), "-v", "--model-dir", str(tmp_path)],
         _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
@@ -356,9 +376,182 @@ def test_double_verbose_prints_transcription_progress_to_stderr(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
-    assert "transcribe progress=50% audio=00:00:00.500/00:00:01.000" in captured.err
-    assert "transcribe progress=100% audio=00:00:01.000/00:00:01.000" in captured.err
+    assert "transcribe [##########----------] progress=50%" in captured.err
+    assert "transcribe [####################] progress=100%" in captured.err
+    assert "\n  audio=00:00:00.500/00:00:01.000" in captured.err
+    assert "\n  audio=00:00:01.000/00:00:01.000" in captured.err
     assert "eta=00:00:00.000" in captured.err
+
+
+def test_verbose_redraws_transcription_progress_in_terminal(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive stderr and a transcriber that emits two progress updates.
+    from sttx.cli import run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: verbose transcription runs in the terminal.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: progress redraws in place and completes before the next diagnostic line.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "\r[+" in captured.err
+    assert "[##########----------] 50% 00:00:00.500/00:00:01.000" in captured.err
+    assert "[####################] 100% 00:00:01.000/00:00:01.000" in captured.err
+    assert "\r| " not in captured.err
+    assert "\n  audio=" not in captured.err
+    assert "00:00:01.000/00:00:01.000 rtf=" in captured.err
+    assert " eta=00:00:00.000\n[+" in captured.err
+    assert "transcribe complete language=ru segments=1" in captured.err
+
+
+def test_verbose_elapsed_time_ticks_ten_times_per_second_in_terminal(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a terminal renderer with a deterministic tenth-second ticker, thread, and clock.
+    from sttx.cli import run
+
+    waits: list[float] = []
+
+    class Clock:
+        value: float = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+
+    class TimerStop:
+        def wait(self, timeout: float) -> bool:
+            waits.append(timeout)
+            clock.value += timeout
+            return len(waits) > 1
+
+        def set(self) -> None:
+            return None
+
+    class TimerThread:
+        target: Callable[[], None]
+        ident: int | None
+
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            del daemon
+            self.target = target
+            self.ident = 1
+            threads.append(self)
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> None:
+            return None
+
+    threads: list[TimerThread] = []
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr("sttx.cli.threading.Event", TimerStop)
+    monkeypatch.setattr("sttx.cli.threading.Thread", TimerThread)
+    monkeypatch.setattr("sttx.cli.time.perf_counter", clock)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    # When: one progress update is followed by the ticker's first wake-up.
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        threads[0].target()
+        progress(16_000, 16_000)
+        return _transcript()
+
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: the same progress body redraws with elapsed time after 0.1 seconds.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert waits == [0.1, 0.1]
+    assert "\r[+00:00:00.000] [##########----------] 50%" in captured.err
+    assert "\r[+00:00:00.100] [##########----------] 50%" in captured.err
+
+
+def test_verbose_finishes_terminal_progress_before_cancellation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive transcription interrupted after its first progress update.
+    from sttx.cli import ShutdownRequested, run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> None:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        raise ShutdownRequested(signal.SIGINT)
+
+    # When: the CLI receives cancellation during verbose terminal progress.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: cancellation starts on a fresh stderr line.
+    captured = capsys.readouterr()
+    assert exit_code == 130
+    assert "\r[+" in captured.err
+    assert "[##########----------] 50%" in captured.err
+    assert "\nerror: cancelled by SIGINT\n" in captured.err
 
 
 def test_json_log_format_emits_structured_progress_and_preserves_stdout(
@@ -388,7 +581,7 @@ def test_json_log_format_emits_structured_progress_and_preserves_stdout(
 
     # When: JSON Lines logging is requested with live transcription progress.
     exit_code = run(
-        [str(media), "-vv", "--log-format", "json", "--model-dir", str(tmp_path)],
+        [str(media), "-v", "--log-format", "json", "--model-dir", str(tmp_path)],
         _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
