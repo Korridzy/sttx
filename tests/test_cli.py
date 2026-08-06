@@ -113,14 +113,14 @@ def _fake_dependencies(
 
 def test_parser_contract() -> None:
     # Given: the public parser builder.
-    from sttx.cli import build_parser
+    from sttx.cli import CliRuntimeError, build_parser
 
     # When: supported arguments are parsed.
     parser = build_parser()
     namespace = parser.parse_args(
         [
             "media.mp4",
-            "--output",
+            "--output-name",
             "episode",
             "--outdir",
             "results",
@@ -140,6 +140,8 @@ def test_parser_contract() -> None:
     assert parser.parse_args(["media.mp4", "--debug"]).debug is True
     assert parser.parse_args(["media.mp4"]).log_format == "text"
     assert parser.parse_args(["media.mp4", "--log-format", "json"]).log_format == "json"
+    with pytest.raises(CliRuntimeError):
+        _ = parser.parse_args(["media.mp4", "--output", "episode"])
 
 
 @pytest.mark.parametrize("arguments", (["-vv"], ["--verbose", "--verbose"]))
@@ -917,7 +919,7 @@ def test_run_validates_input_and_output_before_bundle_acquisition(
 
     # When: the runner sees the missing input.
     exit_code = run(
-        [str(media), "--output", "episode"],
+        [str(media), "--output-name", "episode"],
         _dependencies=replace(
             _fake_dependencies(tmp_path),
             resolve_bundle=forbidden_resolve,
@@ -950,7 +952,7 @@ def test_invalid_output_names_exit_one_before_model_load(
 
     # When: output validation fails.
     exit_code = run(
-        [str(media), "--output", "bad.json"],
+        [str(media), "--output-name", "bad.json"],
         _dependencies=replace(
             _fake_dependencies(tmp_path),
             resolve_bundle=forbidden_resolve,
@@ -1142,7 +1144,7 @@ def test_output_failure_cleans_staging(
 
     # When: real output writing fails after staging files are created.
     exit_code = run(
-        [str(media), "--output", "episode", "--outdir", str(outdir), "--model-dir", str(tmp_path)],
+        [str(media), "--output-name", "episode", "--outdir", str(outdir), "--model-dir", str(tmp_path)],
         _dependencies=_fake_dependencies(tmp_path),
         _write_outputs=write_outputs,
         _cwd=tmp_path,

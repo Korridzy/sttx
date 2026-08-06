@@ -693,11 +693,32 @@ class _VoiceActivityDetectorAdapter:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="sttx", description="Transcribe one media file locally.")
+    parser = _Parser(
+        prog="sttx",
+        description="Transcribe one media file locally.",
+        allow_abbrev=False,
+    )
     parser.add_argument("media", type=Path)
-    parser.add_argument("-o", "--output", dest="output")
-    parser.add_argument("-d", "--outdir", type=Path)
-    parser.add_argument("--model-dir", type=Path)
+    parser.add_argument(
+        "-o",
+        "--output-name",
+        dest="output",
+        metavar="STEM",
+        help="filename stem for JSON/TXT outputs, not a path",
+    )
+    parser.add_argument(
+        "-d",
+        "--outdir",
+        type=Path,
+        metavar="DIR",
+        help="directory for JSON/TXT outputs; relative paths use the current directory (default: ./transcriptions)",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        metavar="DIR",
+        help="use an offline local model bundle; it must contain all required assets",
+    )
     parser.add_argument(
         "-v",
         "--verbose",
