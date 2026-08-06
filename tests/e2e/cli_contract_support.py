@@ -10,7 +10,10 @@ from typing import Final
 import pytest
 
 import sttx.cli as cli
-from sttx.audio import PreparedAudio
+from sttx.asr import ProgressCallback
+from sttx.audio import PreparedAudio, normalize_media
+from sttx.asr_events import ActivityCallback
+from sttx.cli import RunnerDependencies
 from sttx.model import ModelBundle
 from sttx.output import OutputPaths, Segment, Transcript
 
@@ -77,6 +80,22 @@ class RunResult:
 class ErrorResult:
     exit_code: int
     stderr: str
+
+
+def _transcribe_success(
+    _audio: PreparedAudio,
+    *,
+    recognizer: FakeRecognizer,
+    vad: FakeVad,
+    progress: ProgressCallback | None = None,
+    activity: ActivityCallback | None = None,
+) -> Transcript:
+    del recognizer, vad, progress, activity
+    return Transcript(
+        language="en",
+        duration=1.0,
+        segments=(Segment(0, 0.0, 1.0, TEXT),),
+    )
 
 
 def install_runtime_guards(
@@ -147,7 +166,10 @@ def run_success(context: RunContext) -> RunResult:
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: ProgressCallback | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
+        del progress, activity
         assert recognizer.bundle == context.bundle
         assert vad.bundle == context.bundle
         seen_prepared.append(prepared)
@@ -168,13 +190,16 @@ def run_success(context: RunContext) -> RunResult:
     if context.case.outdir is not None:
         argv.extend(("--outdir", str(context.case.outdir)))
     if context.case.name is not None:
-        argv.extend(("--output", context.case.name))
+        argv.extend(("--output-name", context.case.name))
     exit_code = cli.run(
         argv,
-        _resolve_bundle=lambda _model_dir: context.bundle,
-        _make_recognizer=make_recognizer,
-        _make_vad=make_vad,
-        _transcribe=transcribe,
+        _dependencies=RunnerDependencies(
+            normalize_media=normalize_media,
+            resolve_bundle=lambda _model_dir: context.bundle,
+            make_recognizer=make_recognizer,
+            make_vad=make_vad,
+            transcribe=transcribe,
+        ),
         _cwd=context.cwd,
     )
     prepared = seen_prepared[0] if seen_prepared else None
@@ -194,11 +219,12 @@ def run_error(
 ) -> ErrorResult:
     exit_code = cli.run(
         argv,
-        _resolve_bundle=lambda _model_dir: bundle,
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: Transcript(
-            language="en", duration=1.0, segments=(Segment(0, 0.0, 1.0, TEXT),)
+        _dependencies=RunnerDependencies(
+            normalize_media=normalize_media,
+            resolve_bundle=lambda _model_dir: bundle,
+            make_recognizer=FakeRecognizer,
+            make_vad=FakeVad,
+            transcribe=_transcribe_success,
         ),
     )
     captured = capsys.readouterr()
@@ -221,16 +247,21 @@ def run_decode_failure(context: DecodeContext) -> int:
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: ProgressCallback | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del prepared, recognizer, vad
+        del prepared, recognizer, vad, progress, activity
         raise RuntimeError("injected decoder failure")
 
     return cli.run(
         [str(context.media), "--model-dir", str(context.tmp_path)],
-        _resolve_bundle=lambda _model_dir: context.bundle,
-        _make_recognizer=make_recognizer,
-        _make_vad=make_vad,
-        _transcribe=fail_transcribe,
+        _dependencies=RunnerDependencies(
+            normalize_media=normalize_media,
+            resolve_bundle=lambda _model_dir: context.bundle,
+            make_recognizer=make_recognizer,
+            make_vad=make_vad,
+            transcribe=fail_transcribe,
+        ),
         _cwd=context.tmp_path,
     )
 

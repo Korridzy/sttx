@@ -1,16 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-from dataclasses import dataclass
+import signal
+import sys
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 
 import pytest
 
-from sttx.audio import AudioEnvironmentError, PreparedAudio
+from sttx.audio import AudioEnvironmentError
+from sttx.asr_events import (
+    ActivityCallback,
+    DecodeFinished,
+    DecodeStarted,
+    LanguageReported,
+    ScanAdvanced,
+    ScanFinished,
+    ScanStarted,
+    TranscriptionSummary,
+    VadSegmentReady,
+    WordCountUpdated,
+)
 from sttx.model import ModelBundle, ModelEnvironmentError
 from sttx.output import OutputPathError, OutputPaths, Segment, Transcript, write_outputs
+from sttx.cli import RunnerDependencies
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,16 +84,43 @@ def _transcript(text: str = "Привет мир") -> Transcript:
     )
 
 
+def _fake_transcribe(
+    _audio: FakePreparedAudio,
+    *,
+    recognizer: FakeRecognizer,
+    vad: FakeVad,
+    progress: Callable[[int, int], None] | None = None,
+    activity: ActivityCallback | None = None,
+) -> Transcript:
+    del recognizer, vad, progress, activity
+    return _transcript()
+
+
+def _fake_dependencies(
+    tmp_path: Path,
+) -> RunnerDependencies[FakePreparedAudio, FakeRecognizer, FakeVad]:
+    return RunnerDependencies(
+        normalize_media=lambda _path: FakePreparedAudio(
+            path=tmp_path / "prepared.wav",
+            sample_count=16_000,
+        ),
+        resolve_bundle=lambda _model_dir: _bundle(tmp_path),
+        make_recognizer=FakeRecognizer,
+        make_vad=FakeVad,
+        transcribe=_fake_transcribe,
+    )
+
+
 def test_parser_contract() -> None:
     # Given: the public parser builder.
-    from sttx.cli import build_parser
+    from sttx.cli import CliRuntimeError, build_parser
 
     # When: supported arguments are parsed.
     parser = build_parser()
     namespace = parser.parse_args(
         [
             "media.mp4",
-            "--output",
+            "--output-name",
             "episode",
             "--outdir",
             "results",
@@ -90,7 +135,32 @@ def test_parser_contract() -> None:
     assert namespace.output == "episode"
     assert namespace.outdir == Path("results")
     assert namespace.model_dir == Path("models")
-    assert namespace.verbose is True
+    assert namespace.verbose == 1
+    assert parser.parse_args(["media.mp4"]).debug is False
+    assert parser.parse_args(["media.mp4", "--debug"]).debug is True
+    assert parser.parse_args(["media.mp4"]).log_format == "text"
+    assert parser.parse_args(["media.mp4", "--log-format", "json"]).log_format == "json"
+    with pytest.raises(CliRuntimeError):
+        _ = parser.parse_args(["media.mp4", "--output", "episode"])
+
+
+@pytest.mark.parametrize("arguments", (["-vv"], ["--verbose", "--verbose"]))
+def test_rejects_repeated_verbose_flag(
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+) -> None:
+    # Given: the public CLI entry point.
+    from sttx.cli import run
+
+    # When: verbose syntax is repeated.
+    exit_code = run(["media.mp4", *arguments])
+
+    # Then: the duplicate option is rejected before touching the pipeline.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "usage: sttx" in captured.err
+    assert captured.err.splitlines()[-1] == "error: --verbose may be specified once"
 
 
 def test_output_precedence_and_exact_paths(
@@ -117,14 +187,7 @@ def test_output_precedence_and_exact_paths(
     # When: the runner resolves output paths before acquiring models.
     exit_code = run(
         [str(media), "-o", "episode", "-d", "relative", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        _dependencies=_fake_dependencies(tmp_path),
         _output_paths=capture_paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -151,7 +214,7 @@ def test_stdout_contains_only_final_paths(
     events: list[str] = []
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
 
-    def normalize(path: Path) -> PreparedAudio:
+    def normalize(path: Path) -> FakePreparedAudio:
         events.append(f"normalize:{path.name}")
         return prepared
 
@@ -168,12 +231,14 @@ def test_stdout_contains_only_final_paths(
         return FakeVad(model_bundle)
 
     def transcribe(
-        audio: PreparedAudio,
+        audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, progress, activity
         assert audio is prepared
         prepared.cleanup_seen_after_transcription = prepared.cleaned
         events.append("transcribe")
@@ -192,14 +257,18 @@ def test_stdout_contains_only_final_paths(
         events.append(f"write:{transcript.text}")
         assert output == paths
 
+    dependencies = RunnerDependencies(
+        normalize_media=normalize,
+        resolve_bundle=resolve,
+        make_recognizer=make_recognizer,
+        make_vad=make_vad,
+        transcribe=transcribe,
+    )
+
     # When: the dependency-injectable runner completes.
     exit_code = run(
         [str(media), "-o", "episode", "-d", str(tmp_path), "--model-dir", str(tmp_path)],
-        _normalize_media=normalize,
-        _resolve_bundle=resolve,
-        _make_recognizer=make_recognizer,
-        _make_vad=make_vad,
-        _transcribe=transcribe,
+        _dependencies=dependencies,
         _output_paths=output_paths,
         _write_outputs=write_outputs,
         _cwd=tmp_path,
@@ -233,18 +302,21 @@ def test_verbose_prints_progress_to_stderr(
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"media")
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+    long_prepared_audio = FakePreparedAudio(
+        path=tmp_path / "prepared.wav",
+        sample_count=58_579_744,
+    )
+
+    def normalize(_path: Path) -> FakePreparedAudio:
+        return long_prepared_audio
 
     # When: verbose mode is enabled.
     exit_code = run(
         [str(media), "--verbose", "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            normalize_media=normalize,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda _transcript, _paths: None,
         _cwd=tmp_path,
@@ -254,7 +326,573 @@ def test_verbose_prints_progress_to_stderr(
     captured = capsys.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
-    assert "complete duration=1.25s rtf=" in captured.err
+    assert f"input path={media}" in captured.err
+    assert f"output json={paths.json_path} txt={paths.txt_path}" in captured.err
+    assert "normalize start" in captured.err
+    assert "normalize complete duration=01:01:01.234" in captured.err
+    assert "models resolve start" in captured.err
+    assert "models resolve complete" in captured.err
+    assert "recognizer initialize start" in captured.err
+    assert "recognizer initialize complete" in captured.err
+    assert "VAD initialize start" in captured.err
+    assert "VAD initialize complete" in captured.err
+    assert "transcribe start" in captured.err
+    assert "transcribe complete language=ru segments=1" in captured.err
+    assert "write outputs start" in captured.err
+    assert "write outputs complete" in captured.err
+    assert "transcribe progress=" not in captured.err
+    assert "complete duration=00:00:01.250 rtf=" in captured.err
+
+
+def test_verbose_prints_transcription_progress_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad
+        assert progress is not None
+        assert activity is None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "transcribe [##########----------] progress=50%" in captured.err
+    assert "transcribe [####################] progress=100%" in captured.err
+    assert "\n  audio=00:00:00.500/00:00:01.000" in captured.err
+    assert "\n  audio=00:00:01.000/00:00:01.000" in captured.err
+    assert "eta=00:00:00.000" in captured.err
+
+
+def test_verbose_redraws_transcription_progress_in_terminal(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive stderr and a transcriber that emits two progress updates.
+    from sttx.cli import run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: verbose transcription runs in the terminal.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: progress redraws in place and completes before the next diagnostic line.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "\r[+" in captured.err
+    assert "[##########----------] 50% 00:00:00.500/00:00:01.000" in captured.err
+    assert "[####################] 100% 00:00:01.000/00:00:01.000" in captured.err
+    assert "\r| " not in captured.err
+    assert "\n  audio=" not in captured.err
+    assert "00:00:01.000/00:00:01.000 rtf=" in captured.err
+    assert " eta=00:00:00.000\r\n[+" in captured.err
+    assert "transcribe complete language=ru segments=1" in captured.err
+
+
+def test_verbose_elapsed_time_ticks_ten_times_per_second_in_terminal(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a terminal renderer with a deterministic tenth-second ticker, thread, and clock.
+    from sttx.cli import run
+
+    waits: list[float] = []
+
+    class Clock:
+        value: float = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+
+    class TimerStop:
+        def wait(self, timeout: float) -> bool:
+            waits.append(timeout)
+            clock.value += timeout
+            return len(waits) > 1
+
+        def set(self) -> None:
+            return None
+
+    class TimerThread:
+        target: Callable[[], None]
+        ident: int | None
+
+        def __init__(self, *, target: Callable[[], None], daemon: bool) -> None:
+            del daemon
+            self.target = target
+            self.ident = 1
+            threads.append(self)
+
+        def start(self) -> None:
+            return None
+
+        def join(self) -> None:
+            return None
+
+    threads: list[TimerThread] = []
+    terminal_checks = 0
+
+    def stderr_isatty() -> bool:
+        nonlocal terminal_checks
+        terminal_checks += 1
+        return terminal_checks == 1
+
+    monkeypatch.setattr(sys.stderr, "isatty", stderr_isatty)
+    monkeypatch.setattr("sttx.cli.LIVE_PROGRESS_STOP_FACTORY", TimerStop)
+    monkeypatch.setattr("sttx.cli.threading.Thread", TimerThread)
+    monkeypatch.setattr("sttx.cli.time.perf_counter", clock)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    # When: one progress update is followed by the ticker's first wake-up.
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        threads[0].target()
+        progress(16_000, 16_000)
+        return _transcript()
+
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: the same progress body redraws with elapsed time after 0.1 seconds.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    assert terminal_checks == 1
+    assert waits == [0.1, 0.1]
+    assert "\r[+00:00:00.000] [##########----------] 50%" in captured.err
+    assert "\r[+00:00:00.100] [##########----------] 50%" in captured.err
+
+
+def test_verbose_ticker_keeps_tenth_second_cadence_while_relay_writes_native_stderr(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: native stderr forwarding is blocked while the real ticker thread runs.
+    from sttx.cli import _NativeStderrRelay, run
+
+    waits: list[float] = []
+    ticks_enabled = threading.Event()
+    second_tick_due = threading.Event()
+    native_write_started = threading.Event()
+    release_native_write = threading.Event()
+
+    class Clock:
+        value: float = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+
+    class TimerStop:
+        def __init__(self) -> None:
+            self.stopped = threading.Event()
+
+        def wait(self, timeout: float) -> bool:
+            assert ticks_enabled.wait(timeout=1.0)
+            if len(waits) >= 2:
+                return self.stopped.wait()
+            waits.append(timeout)
+            clock.value += timeout
+            if len(waits) == 2:
+                second_tick_due.set()
+            return False
+
+        def set(self) -> None:
+            self.stopped.set()
+            ticks_enabled.set()
+
+    relay_write = _NativeStderrRelay._write
+
+    def block_native_write(relay: _NativeStderrRelay, payload: bytes) -> None:
+        if b"native warning" in payload:
+            native_write_started.set()
+            assert release_native_write.wait(timeout=1.0)
+        relay_write(relay, payload)
+
+    second_tick_observed: list[bool] = []
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr("sttx.cli.LIVE_PROGRESS_STOP_FACTORY", TimerStop)
+    monkeypatch.setattr("sttx.cli.time.perf_counter", clock)
+    monkeypatch.setattr(_NativeStderrRelay, "_write", block_native_write)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        os.write(2, b"native warning\n")
+        assert native_write_started.wait(timeout=1.0)
+        ticks_enabled.set()
+        second_tick_observed.append(second_tick_due.wait(timeout=0.5))
+        release_native_write.set()
+        return _transcript()
+
+    # When: verbose terminal progress runs through two timer wake-ups.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: relay backpressure does not delay either tenth-second progress frame.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    assert second_tick_observed == [True]
+    assert waits[:2] == [0.1, 0.1]
+    assert "\r[+00:00:00.100] [##########----------] 50%" in captured.err
+    assert "\r[+00:00:00.200] [##########----------] 50%" in captured.err
+
+
+def test_verbose_finishes_terminal_progress_before_cancellation(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive transcription interrupted after its first progress update.
+    from sttx.cli import ShutdownRequested, run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> None:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        raise ShutdownRequested(signal.SIGINT)
+
+    # When: the CLI receives cancellation during verbose terminal progress.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: cancellation starts on a fresh stderr line.
+    captured = capfd.readouterr()
+    assert exit_code == 130
+    assert "\r[+" in captured.err
+    assert "[##########----------] 50%" in captured.err
+    assert "\nerror: cancelled by SIGINT\n" in captured.err
+
+
+def test_verbose_places_native_stderr_on_fresh_line_without_stopping_progress(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive transcription whose native dependency writes to fd 2.
+    from sttx.cli import run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        os.write(
+            2,
+            b"/project/sherpa-onnx/csrc/circular-buffer.cc:Push:107 Overflow!\n",
+        )
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: verbose terminal progress is interleaved with the native write.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: the bar remains visible before the native line and continues afterward.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    half_bar = "[##########----------] 50%"
+    native_warning = "/project/sherpa-onnx/csrc/circular-buffer.cc:Push:107 Overflow!"
+    full_bar = "[####################] 100%"
+    half_bar_index = captured.err.index(half_bar)
+    native_warning_index = captured.err.index(native_warning)
+    full_bar_index = captured.err.index(full_bar)
+    assert half_bar_index < native_warning_index < full_bar_index
+    assert captured.err[native_warning_index - 2 : native_warning_index] == "\r\n"
+
+
+def test_json_log_format_emits_structured_progress_and_preserves_stdout(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a transcriber that reports deterministic live progress.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: JSON Lines logging is requested with live transcription progress.
+    exit_code = run(
+        [str(media), "-v", "--log-format", "json", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: stderr is machine-readable telemetry and stdout remains the artifact contract.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    records = [json.loads(line) for line in captured.err.splitlines()]
+    assert all(isinstance(record["event"], str) for record in records)
+    assert all(isinstance(record["elapsed_seconds"], float) for record in records)
+    progress_records = [
+        record for record in records if record["event"] == "transcribe_progress"
+    ]
+    assert [record["percent"] for record in progress_records] == [50, 100]
+    assert progress_records[0]["audio_seconds"] == 0.5
+    assert progress_records[0]["audio_total_seconds"] == 1.0
+    assert progress_records[0]["eta_seconds"] >= 0.0
+    assert "Привет мир" not in captured.err
+
+
+def test_json_log_format_emits_structured_validation_errors(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a missing media path and JSON log formatting.
+    from sttx.cli import run
+
+    media = tmp_path / "missing.mp4"
+
+    # When: validation fails before the transcription pipeline starts.
+    exit_code = run([str(media), "--log-format", "json"])
+
+    # Then: the failure remains a single actionable JSON record on stderr.
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    records = [json.loads(line) for line in captured.err.splitlines()]
+    assert len(records) == 1
+    assert records[0]["event"] == "error"
+    assert records[0]["stage"] == "validate"
+    assert records[0]["exception_type"] == "AudioEnvironmentError"
+    assert "input is not a readable file" in records[0]["message"]
+
+
+def test_debug_prints_internal_diagnostics_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a successful injected run with deep diagnostics requested.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    prepared_path = tmp_path / "prepared.wav"
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+    activity_calls: list[bool] = []
+
+    def transcribe_with_activity(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, progress
+        assert activity is not None
+        activity(ScanStarted(total_samples=16_000))
+        activity(ScanAdvanced(processed_samples=8_000, total_samples=16_000))
+        activity(VadSegmentReady(index=1, start_sample=0, sample_count=8_000))
+        activity(DecodeStarted(index=1, start_sample=0, sample_count=8_000))
+        activity(DecodeFinished(index=1, start_sample=0, sample_count=8_000))
+        activity(LanguageReported(language="ru"))
+        activity(WordCountUpdated(word_count=2))
+        activity(ScanFinished(total_samples=16_000))
+        activity(
+            TranscriptionSummary(
+                total_samples=16_000,
+                voiced_samples=8_000,
+                vad_segments=1,
+                decoded_samples=8_000,
+                decode_chunks=1,
+                word_count=2,
+                language="ru",
+                transcript_segments=1,
+            )
+        )
+        activity_calls.append(True)
+        return _transcript()
+
+    # When: debug mode is enabled.
+    exit_code = run(
+        [str(media), "--debug", "--model-dir", str(tmp_path)],
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            normalize_media=lambda _path: FakePreparedAudio(
+                path=prepared_path,
+                sample_count=16_000,
+            ),
+            transcribe=transcribe_with_activity,
+        ),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=lambda _transcript, _paths: None,
+        _cwd=tmp_path,
+    )
+
+    # Then: diagnostics are complete enough for reproduction but stdout is unchanged.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert activity_calls == [True]
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert "debug configuration" in captured.err
+    assert "debug ffmpeg argv=ffmpeg -nostdin" in captured.err
+    assert f"debug normalized_wav={prepared_path}" in captured.err
+    assert "debug model source=explicit" in captured.err
+    assert "debug model asset=encoder path=" in captured.err
+    assert "debug stage=normalize duration=" in captured.err
+    assert "debug asr scan progress=50% audio=00:00:00.500/00:00:01.000" in captured.err
+    assert "debug asr vad segment=1 audio=00:00:00.000+00:00:00.500" in captured.err
+    assert "debug asr decode start chunk=1" in captured.err
+    assert "debug asr decode done chunk=1" in captured.err
+    assert "debug asr language reported=ru" in captured.err
+    assert "debug asr words=2" in captured.err
+    assert "debug asr summary vad_segments=1 decode_chunks=1 words=2" in captured.err
+
+
+def test_debug_prints_traceback_for_unexpected_write_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a completed transcription whose output seam raises an unexpected exception.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+
+    def broken_write(_transcript: Transcript, _paths: OutputPaths) -> None:
+        raise KeyError("staging metadata missing")
+
+    # When: debug mode handles the failure boundary.
+    exit_code = run(
+        [str(media), "--debug", "--model-dir", str(tmp_path)],
+        _dependencies=_fake_dependencies(tmp_path),
+        _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+        _write_outputs=broken_write,
+        _cwd=tmp_path,
+    )
+
+    # Then: callers receive the normal runtime exit code plus debug context and traceback.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "debug failure stage=write exception=KeyError" in captured.err
+    assert "Traceback" in captured.err
+    assert "KeyError: 'staging metadata missing'" in captured.err
 
 
 def test_run_validates_input_and_output_before_bundle_acquisition(
@@ -281,8 +919,11 @@ def test_run_validates_input_and_output_before_bundle_acquisition(
 
     # When: the runner sees the missing input.
     exit_code = run(
-        [str(media), "--output", "episode"],
-        _resolve_bundle=forbidden_resolve,
+        [str(media), "--output-name", "episode"],
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            resolve_bundle=forbidden_resolve,
+        ),
         _output_paths=forbidden_paths,
         _cwd=tmp_path,
     )
@@ -311,8 +952,11 @@ def test_invalid_output_names_exit_one_before_model_load(
 
     # When: output validation fails.
     exit_code = run(
-        [str(media), "--output", "bad.json"],
-        _resolve_bundle=forbidden_resolve,
+        [str(media), "--output-name", "bad.json"],
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            resolve_bundle=forbidden_resolve,
+        ),
         _cwd=tmp_path,
     )
 
@@ -335,17 +979,24 @@ def test_silence_warns_and_exits_zero(
     paths = OutputPaths(json_path=tmp_path / "silent.json", txt_path=tmp_path / "silent.txt")
     writes: list[Transcript] = []
 
+    def transcribe_silence(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, progress, activity
+        return _transcript(text="")
+
     # When: the runner transcribes silence.
     exit_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            transcribe=transcribe_silence,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(text=""),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
         _write_outputs=lambda transcript, _paths: writes.append(transcript),
         _cwd=tmp_path,
@@ -385,11 +1036,7 @@ def test_environment_error_table_exits_one(
     # When: the error reaches the CLI boundary.
     exit_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=raise_error,
+        _dependencies=replace(_fake_dependencies(tmp_path), resolve_bundle=raise_error),
         _cwd=tmp_path,
     )
 
@@ -423,50 +1070,44 @@ def test_argparse_and_transcription_errors_exit_two(
     media.write_bytes(b"media")
 
     def raise_transcription(
-        _audio: PreparedAudio,
+        _audio: FakePreparedAudio,
         *,
         recognizer: FakeRecognizer,
         vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad
+        del recognizer, vad, progress, activity
         raise TranscriptionError("decode failed")
+
+    def raise_recognizer(model_bundle: ModelBundle) -> FakeRecognizer:
+        del model_bundle
+        raise argparse.ArgumentTypeError("recognizer construction failed")
+
+    def raise_vad(model_bundle: ModelBundle) -> FakeVad:
+        del model_bundle
+        raise argparse.ArgumentTypeError("VAD construction failed")
 
     # When: recognizer construction, VAD construction, and decoding fail.
     recognizer_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda _model_bundle: (_ for _ in ()).throw(
-            argparse.ArgumentTypeError("recognizer construction failed")
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            make_recognizer=raise_recognizer,
         ),
         _cwd=tmp_path,
     )
     vad_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda _model_bundle: (_ for _ in ()).throw(
-            argparse.ArgumentTypeError("VAD construction failed")
-        ),
+        _dependencies=replace(_fake_dependencies(tmp_path), make_vad=raise_vad),
         _cwd=tmp_path,
     )
     transcription_code = run(
         [str(media), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
+        _dependencies=replace(
+            _fake_dependencies(tmp_path),
+            transcribe=raise_transcription,
         ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=raise_transcription,
         _cwd=tmp_path,
     )
 
@@ -503,15 +1144,8 @@ def test_output_failure_cleans_staging(
 
     # When: real output writing fails after staging files are created.
     exit_code = run(
-        [str(media), "--output", "episode", "--outdir", str(outdir), "--model-dir", str(tmp_path)],
-        _normalize_media=lambda _path: FakePreparedAudio(
-            path=tmp_path / "prepared.wav",
-            sample_count=16_000,
-        ),
-        _resolve_bundle=lambda _model_dir: _bundle(tmp_path),
-        _make_recognizer=lambda model_bundle: FakeRecognizer(model_bundle),
-        _make_vad=lambda model_bundle: FakeVad(model_bundle),
-        _transcribe=lambda _audio, *, recognizer, vad: _transcript(),
+        [str(media), "--output-name", "episode", "--outdir", str(outdir), "--model-dir", str(tmp_path)],
+        _dependencies=_fake_dependencies(tmp_path),
         _write_outputs=write_outputs,
         _cwd=tmp_path,
     )

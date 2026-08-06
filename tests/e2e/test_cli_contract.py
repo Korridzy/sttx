@@ -9,7 +9,7 @@ from typing import Final, TypedDict
 
 import pytest
 
-from cli_contract_support import (
+from .cli_contract_support import (
     TEXT,
     DecodeContext,
     FormatCase,
@@ -132,7 +132,7 @@ def test_error_and_silence_contracts(
     assert unreadable_result.exit_code == 1
     assert unreadable_result.stderr == f"error: cannot prepare audio from {unreadable}: input is not a readable file\n"
 
-    invalid_name = run_error([str(media), "--output", "bad.json", *error_args], capsys, bundle)
+    invalid_name = run_error([str(media), "--output-name", "bad.json", *error_args], capsys, bundle)
     assert invalid_name.exit_code == 1
     assert invalid_name.stderr == "error: invalid output path bad.json: name must be one stem without suffix\n"
 

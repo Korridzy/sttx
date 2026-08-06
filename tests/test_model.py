@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from model_helpers import ALL_NAMES, bundle_paths, model_module, write_files
+from .model_helpers import ALL_NAMES, bundle_paths, model_module, write_files
 
 
 def test_complete_model_dir_is_zero_network(tmp_path: Path) -> None:

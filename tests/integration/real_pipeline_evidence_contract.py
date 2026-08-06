@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from real_pipeline_artifacts import JsonValue
+from .real_pipeline_artifacts import JsonValue
 
 HF_ASSETS = ("encoder", "decoder", "joiner", "tokens")
 RUNTIME_ASSETS = (*HF_ASSETS, "silero")

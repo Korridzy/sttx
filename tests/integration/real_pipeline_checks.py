@@ -7,20 +7,33 @@ from pathlib import Path
 
 import pytest
 
-from real_pipeline_artifacts import JsonValue, bundle_identity, snapshot_commit
-from real_pipeline_media import (
+from .real_pipeline_artifacts import (
+    JsonValue,
+    bundle_identity,
+    json_mapping,
+    snapshot_commit,
+)
+from .real_pipeline_media import (
     read_transcript,
     write_no_audio_mp4,
     write_silence_wav,
     write_two_utterance_wav,
 )
-from real_pipeline_observability import (
+from .real_pipeline_observability import (
     observe_hard_split,
     observe_vad_segments,
     write_vad_positive_continuous_wav,
 )
-from real_pipeline_runner import STTX_BIN, poisoned_env, run_command, run_sttx, trace_command
-from real_pipeline_trace import assert_clean_trace
+from .real_pipeline_runner import (
+    STTX_BIN,
+    CacheEnv,
+    poisoned_env,
+    run_command,
+    run_sttx,
+    trace_command,
+)
+from .real_pipeline_trace import assert_clean_trace
+from sttx.model import ModelBundle
 
 REQUIRED_FILES = (
     "encoder.int8.onnx",
@@ -34,7 +47,7 @@ REQUIRED_FILES = (
 def prove_warm_offline(
     tmp_path: Path,
     artifact_root: Path,
-    cold,
+    cold: CacheEnv,
     en_wav: Path,
     evidence: dict[str, JsonValue],
 ) -> None:
@@ -60,8 +73,14 @@ def prove_warm_offline(
     assert isinstance(cold_assets, dict)
     assert warm_identity["commit"] == cold_model["commit"]
     assert warm_identity["assets"] == cold_assets
-    evidence["commands"] = {**evidence["commands"], "warm_offline": result.to_json()}
-    evidence["checks"] = {**evidence["checks"], "warm_offline": asdict(check)}
+    evidence["commands"] = {
+        **json_mapping(evidence["commands"], "commands"),
+        "warm_offline": result.to_json(),
+    }
+    evidence["checks"] = {
+        **json_mapping(evidence["checks"], "checks"),
+        "warm_offline": asdict(check),
+    }
     evidence["warm_identity"] = warm_identity
     evidence["cold_warm_identity_match"] = True
 
@@ -91,12 +110,15 @@ def prove_model_dir_variants(
         assert result.returncode == (0 if case == "complete" else 1), result.to_json()
         assert_clean_trace(prefix, tuple(Path(value) for value in poisoned.values.values()))
         results[case] = result.to_json()
-    evidence["commands"] = {**evidence["commands"], "model_dir": results}
+    evidence["commands"] = {
+        **json_mapping(evidence["commands"], "commands"),
+        "model_dir": results,
+    }
 
 
 def prove_real_transcript_shapes(
     tmp_path: Path,
-    cold,
+    cold: CacheEnv,
     bundle_dir: Path,
     en_wav: Path,
     evidence: dict[str, JsonValue],
@@ -134,7 +156,7 @@ def prove_real_transcript_shapes(
     )
     assert long_result.returncode == 0, long_result.to_json()
     evidence["checks"] = {
-        **evidence["checks"],
+        **json_mapping(evidence["checks"], "checks"),
         "two_utterance_cli": {
             **asdict(check),
             "vad_chunks": [segment.to_json() for segment in two_vad],
@@ -147,7 +169,7 @@ def prove_real_transcript_shapes(
 
 def prove_silence_and_no_audio(
     tmp_path: Path,
-    cold,
+    cold: CacheEnv,
     bundle_dir: Path,
     evidence: dict[str, JsonValue],
 ) -> None:
@@ -168,7 +190,11 @@ def prove_silence_and_no_audio(
         offline=True,
     )
     assert no_audio_result.returncode == 1, no_audio_result.to_json()
-    evidence["commands"] = {**evidence["commands"], "silence": silence_result.to_json(), "no_audio": no_audio_result.to_json()}
+    evidence["commands"] = {
+        **json_mapping(evidence["commands"], "commands"),
+        "silence": silence_result.to_json(),
+        "no_audio": no_audio_result.to_json(),
+    }
 
 
 def prove_trace_parser_hostile_fixtures(tmp_path: Path, evidence: dict[str, JsonValue]) -> None:
@@ -206,12 +232,15 @@ def prove_trace_parser_hostile_fixtures(tmp_path: Path, evidence: dict[str, Json
     )
     with pytest.raises(AssertionError):
         assert_clean_trace(prefix)
-    evidence["checks"] = {**evidence["checks"], "trace_parser_hostile_fixtures": "pass"}
+    evidence["checks"] = {
+        **json_mapping(evidence["checks"], "checks"),
+        "trace_parser_hostile_fixtures": "pass",
+    }
 
 
 def prove_asr_hard_split(en_wav: Path, evidence: dict[str, JsonValue]) -> None:
     evidence["checks"] = {
-        **evidence["checks"],
+        **json_mapping(evidence["checks"], "checks"),
         "hard_split_boundary_samples": {
             "required": 480000,
             "production_constant": __import__("sttx.asr", fromlist=["MAX_CHUNK_SAMPLES"]).MAX_CHUNK_SAMPLES,
@@ -220,7 +249,7 @@ def prove_asr_hard_split(en_wav: Path, evidence: dict[str, JsonValue]) -> None:
     }
 
 
-def pgrep_clean() -> JsonValue:
+def pgrep_clean() -> dict[str, JsonValue]:
     completed = subprocess.run(
         ("pgrep", "-af", "sttx|ffmpeg|test_real_pipeline"),
         check=False,
@@ -237,9 +266,7 @@ def stdout_paths(stdout: str) -> tuple[Path, Path]:
     return lines[0], lines[1]
 
 
-def _bundle(bundle_dir: Path):
-    from sttx.model import ModelBundle
-
+def _bundle(bundle_dir: Path) -> ModelBundle:
     return ModelBundle(
         encoder=bundle_dir / "encoder.int8.onnx",
         decoder=bundle_dir / "decoder.int8.onnx",

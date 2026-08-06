@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol, TypeAlias, TypeVar
 
@@ -10,6 +10,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sttx.audio import SAMPLE_RATE, PreparedAudio
+from sttx.asr_events import (
+    ActivityCallback,
+    AsrActivity,
+    DecodeFinished,
+    DecodeStarted,
+    LanguageReported,
+    ScanAdvanced,
+    ScanFinished,
+    ScanStarted,
+    TranscriptionSummary,
+    VadSegmentReady,
+    WordCountUpdated,
+)
 from sttx.output import Segment, Transcript
 
 VAD_WINDOW_SAMPLES: Final = 512
@@ -19,10 +32,12 @@ SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
 
 FloatSamples: TypeAlias = NDArray[np.float32]
+ProgressCallback: TypeAlias = Callable[[int, int], None]
 
 
 class RecognitionStream(Protocol):
-    result: RecognitionResult
+    @property
+    def result(self) -> RecognitionResult: ...
 
     def accept_waveform(
         self,
@@ -32,11 +47,20 @@ class RecognitionStream(Protocol):
 
 
 class RecognitionResult(Protocol):
-    text: str
-    tokens: Sequence[str]
-    timestamps: Sequence[float]
-    durations: Sequence[float]
-    lang: str
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def tokens(self) -> Sequence[str]: ...
+
+    @property
+    def timestamps(self) -> Sequence[float]: ...
+
+    @property
+    def durations(self) -> Sequence[float]: ...
+
+    @property
+    def lang(self) -> str: ...
 
 
 StreamT = TypeVar("StreamT", bound=RecognitionStream)
@@ -50,8 +74,11 @@ class Recognizer(Protocol[StreamT, ResultT]):
 
 
 class VadSegment(Protocol):
-    start: int
-    samples: FloatSamples
+    @property
+    def start(self) -> int: ...
+
+    @property
+    def samples(self) -> FloatSamples: ...
 
 
 class VoiceActivityDetector(Protocol):
@@ -85,7 +112,13 @@ class WordEvent:
 @dataclass(slots=True)  # noqa: MUTABLE_OK
 class _PipelineState:
     words: list[WordEvent]
+    sample_count: int
+    activity: ActivityCallback | None
     language: str = ""
+    voiced_samples: int = 0
+    vad_segments: int = 0
+    decoded_samples: int = 0
+    decode_chunks: int = 0
 
 
 def transcribe(
@@ -93,19 +126,53 @@ def transcribe(
     *,
     recognizer: Recognizer[StreamT, ResultT],
     vad: VoiceActivityDetector,
+    progress: ProgressCallback | None = None,
+    activity: ActivityCallback | None = None,
 ) -> Transcript:
     samples = _read_samples(audio)
-    state = _PipelineState(words=[])
+    state = _PipelineState(
+        words=[],
+        sample_count=audio.sample_count,
+        activity=activity,
+    )
+    _emit_activity(activity, ScanStarted(total_samples=audio.sample_count))
     for start in range(0, len(samples), VAD_WINDOW_SAMPLES):
         vad.accept_waveform(samples[start : start + VAD_WINDOW_SAMPLES])
-        _drain_vad(vad, recognizer, audio.sample_count, state)
+        _drain_vad(vad, recognizer, state)
+        processed_samples = min(start + VAD_WINDOW_SAMPLES, audio.sample_count)
+        _emit_activity(
+            activity,
+            ScanAdvanced(
+                processed_samples=processed_samples,
+                total_samples=audio.sample_count,
+            ),
+        )
+        if progress is not None and processed_samples < audio.sample_count:
+            progress(processed_samples, audio.sample_count)
     vad.flush()
-    _drain_vad(vad, recognizer, audio.sample_count, state)
-    return Transcript(
+    _drain_vad(vad, recognizer, state)
+    if progress is not None:
+        progress(audio.sample_count, audio.sample_count)
+    _emit_activity(activity, ScanFinished(total_samples=audio.sample_count))
+    transcript = Transcript(
         language=state.language or "auto",
         duration=audio.duration,
         segments=_sentence_segments(state.words),
     )
+    _emit_activity(
+        activity,
+        TranscriptionSummary(
+            total_samples=audio.sample_count,
+            voiced_samples=state.voiced_samples,
+            vad_segments=state.vad_segments,
+            decoded_samples=state.decoded_samples,
+            decode_chunks=state.decode_chunks,
+            word_count=len(state.words),
+            language=transcript.language,
+            transcript_segments=len(transcript.segments),
+        ),
+    )
+    return transcript
 
 
 def _read_samples(audio: PreparedAudio) -> FloatSamples:
@@ -128,34 +195,76 @@ def _read_samples(audio: PreparedAudio) -> FloatSamples:
 def _drain_vad(
     vad: VoiceActivityDetector,
     recognizer: Recognizer[StreamT, ResultT],
-    wav_sample_count: int,
     state: _PipelineState,
 ) -> None:
     while not vad.empty():
         segment = vad.front
-        _decode_segment(segment, recognizer, wav_sample_count, state)
+        state.vad_segments += 1
+        state.voiced_samples += len(segment.samples)
+        _emit_activity(
+            state.activity,
+            VadSegmentReady(
+                index=state.vad_segments,
+                start_sample=segment.start,
+                sample_count=len(segment.samples),
+            ),
+        )
+        _decode_segment(segment, recognizer, state)
         vad.pop()
 
 
 def _decode_segment(
     segment: VadSegment,
     recognizer: Recognizer[StreamT, ResultT],
-    wav_sample_count: int,
     state: _PipelineState,
 ) -> None:
-    if segment.start < 0 or segment.start + len(segment.samples) > wav_sample_count:
+    if segment.start < 0 or segment.start + len(segment.samples) > state.sample_count:
         raise TranscriptionError(reason="VAD segment lies outside WAV duration")
     for split_start in range(0, len(segment.samples), MAX_CHUNK_SAMPLES):
         chunk = segment.samples[split_start : split_start + MAX_CHUNK_SAMPLES]
+        chunk_start = segment.start + split_start
+        state.decode_chunks += 1
+        _emit_activity(
+            state.activity,
+            DecodeStarted(
+                index=state.decode_chunks,
+                start_sample=chunk_start,
+                sample_count=len(chunk),
+            ),
+        )
         stream = recognizer.create_stream()
         stream.accept_waveform(SAMPLE_RATE, chunk)
         recognizer.decode_stream(stream)
+        state.decoded_samples += len(chunk)
+        _emit_activity(
+            state.activity,
+            DecodeFinished(
+                index=state.decode_chunks,
+                start_sample=chunk_start,
+                sample_count=len(chunk),
+            ),
+        )
         result = stream.result
         if not state.language and result.lang.strip():
             state.language = result.lang.strip()
-        offset = (segment.start + split_start) / SAMPLE_RATE
+            _emit_activity(
+                state.activity,
+                LanguageReported(language=state.language),
+            )
+        offset = chunk_start / SAMPLE_RATE
         words = _word_events(result, offset=offset, chunk_duration=len(chunk) / SAMPLE_RATE)
-        _append_monotonic(state.words, words, wav_sample_count / SAMPLE_RATE)
+        previous_word_count = len(state.words)
+        _append_monotonic(state.words, words, state.sample_count / SAMPLE_RATE)
+        if len(state.words) > previous_word_count:
+            _emit_activity(
+                state.activity,
+                WordCountUpdated(word_count=len(state.words)),
+            )
+
+
+def _emit_activity(activity: ActivityCallback | None, event: AsrActivity) -> None:
+    if activity is not None:
+        activity(event)
 
 
 def _word_events(

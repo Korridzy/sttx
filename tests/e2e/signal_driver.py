@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Final
 
 import sttx.output as output_module
+from sttx.asr import ProgressCallback
 from sttx.audio import PreparedAudio, normalize_media
-from sttx.cli import run
+from sttx.asr_events import ActivityCallback
+from sttx.cli import RunnerDependencies, run
 from sttx.model import (
     PARAKEET_FILENAMES,
     ModelBundle,
@@ -225,8 +227,10 @@ def _execute(phase: str, root: Path) -> int:
         *,
         recognizer: ModelBundle,
         vad: ModelBundle,
+        progress: ProgressCallback | None = None,
+        activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del audio, recognizer, vad
+        del audio, recognizer, vad, progress, activity
         if phase in {"cleanup", "decode"}:
             _block(ready)
         return Transcript(
@@ -244,11 +248,13 @@ def _execute(phase: str, root: Path) -> int:
     }
     code = run(
         [str(media), "-o", "episode", "-d", str(outdir)],
-        _normalize_media=normalize_media if phase == "ffmpeg" else normalize,
-        _resolve_bundle=lambda _model_dir: _resolve_for_phase(phase, root, ready),
-        _make_recognizer=lambda bundle: bundle,
-        _make_vad=lambda bundle: bundle,
-        _transcribe=transcribe,
+        _dependencies=RunnerDependencies(
+            normalize_media=normalize_media if phase == "ffmpeg" else normalize,
+            resolve_bundle=lambda _model_dir: _resolve_for_phase(phase, root, ready),
+            make_recognizer=lambda bundle: bundle,
+            make_vad=lambda bundle: bundle,
+            transcribe=transcribe,
+        ),
         _write_outputs=write_outputs,
         _cwd=root,
     )

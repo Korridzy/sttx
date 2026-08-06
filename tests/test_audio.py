@@ -95,11 +95,14 @@ def test_ffmpeg_argv_is_16k_mono_pcm(
     calls: list[SuccessfulPopen] = []
     install_successful_popen(monkeypatch, calls)
 
+    output_path: Path | None = None
+
     # When: the media is normalized.
     with normalize_media(source) as prepared:
         output_path = prepared.path
 
     # Then: ffmpeg receives the single exact conversion path without a shell.
+    assert output_path is not None
     assert calls[0].argv == (
         "ffmpeg",
         "-nostdin",
@@ -230,6 +233,9 @@ def test_real_ffmpeg_normalizes_non_wav_and_cleans_context(tmp_path: Path) -> No
     source = tmp_path / "tone.mp3"
     generate_media(ffmpeg, source, "sine=frequency=440:duration=0.1")
 
+    output: Path | None = None
+    header: tuple[int, int, int, int] | None = None
+
     # When: production normalization runs.
     with normalize_media(source) as prepared:
         output = prepared.path
@@ -242,6 +248,8 @@ def test_real_ffmpeg_normalizes_non_wav_and_cleans_context(tmp_path: Path) -> No
             )
 
     # Then: the real artifact has the promised header and is context-cleaned.
+    assert header is not None
+    assert output is not None
     assert header[:3] == (SAMPLE_RATE, 1, 2)
     assert header[3] > 0
     assert not output.exists()

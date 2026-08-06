@@ -65,19 +65,33 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v] [--version] media
+sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
 - `-h`, `--help` — show usage and exit.
-- `-o OUTPUT`, `--output OUTPUT` — output filename stem. The program adds
+- `-o STEM`, `--output-name STEM` — output filename stem. The program adds
   `.json` and `.txt`; a path or an existing suffix is rejected.
-- `-d OUTDIR`, `--outdir OUTDIR` — output directory. Relative paths are
+- `-d DIR`, `--outdir DIR` — output directory. Relative paths are
   resolved from the current directory; the default is `./transcriptions`.
-- `--model-dir MODEL_DIR` — use a local, offline model bundle instead of
+- `--model-dir DIR` — use a local, offline model bundle instead of
   acquiring model assets.
-- `-v`, `--verbose` — write a completion line with duration and real-time
-  factor to stderr.
+- `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
+  transcription progress to stderr. Text logs include a 20-character ASCII
+  bar, processed audio position, real-time factor, estimated time remaining,
+  and a final duration/real-time-factor summary. In an interactive terminal,
+  an elapsed-time prefix and progress bar redraw in place ten times per second;
+  redirected stderr receives readable line-oriented progress snapshots.
+- `--debug` — enable pipeline progress plus diagnostic details on stderr:
+  ffmpeg arguments, the normalized WAV path, model source and asset paths/sizes,
+  stage timings, live ASR scan/VAD/decode activity, reported language, word
+  counts, and an aggregate ASR summary. It includes a traceback for unexpected
+  failures and never prints transcript content.
+- `--log-format {text,json}` — format enabled stderr diagnostics as human text
+  (the default) or JSON Lines. JSON records have stable `event` and
+  `elapsed_seconds` fields plus event-specific data such as `stage`,
+  `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
+  for machine-consumable pipeline telemetry.
 - `--version` — print `sttx 0.1.0` and exit.
 
 There is no language option: the model reports a language when available and
@@ -88,9 +102,14 @@ the JSON writer falls back to `"auto"`.
 On a successful transcription, stdout contains exactly two newline-separated
 paths, JSON first and TXT second. The application writes diagnostics to
 stderr: argument usage/errors, environment or runtime errors, the no-speech
-warning, and the optional verbose completion line. `--help` and `--version`
-are the usual argparse exceptions: their informational text is printed to
-stdout and they exit successfully.
+warning, optional verbose stage and live-progress messages, and debug
+diagnostics. `--help` and `--version` are the usual argparse exceptions: their
+informational text is printed to stdout and they exit successfully.
+
+With `--log-format json`, enabled diagnostic records are one JSON object per
+stderr line. Successful invocations still print only the two output paths to
+stdout. Argument usage, `--help`, `--version`, and signal cancellation retain
+their normal argparse or cancellation text behavior.
 
 The process exits with:
 
@@ -169,6 +188,6 @@ Silence/no speech is a successful result with `text: ""`, an empty
 
 ## Attribution and licensing
 
-`sttx` source code is licensed under the [Apache License 2.0](LICENSE).
+`sttx` source code is licensed under the [GNU General Public License v3.0 only](LICENSE).
 Third-party software and model assets remain subject to their own terms; see
 [NOTICE.md](NOTICE.md) for attribution and primary upstream license links.

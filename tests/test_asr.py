@@ -61,11 +61,20 @@ class FakeVad:
 @dataclass(slots=True)  # noqa: MUTABLE_OK
 class FakeStream:
     samples: FloatSamples | None = None
-    result: FakeResult | None = None
+    _result: FakeResult | None = None
 
     def accept_waveform(self, sample_rate: int, samples: FloatSamples) -> None:
         assert sample_rate == SAMPLE_RATE
         self.samples = samples
+
+    @property
+    def result(self) -> FakeResult:
+        assert self._result is not None
+        return self._result
+
+    @result.setter
+    def result(self, value: FakeResult) -> None:
+        self._result = value
 
 
 @dataclass(slots=True)  # noqa: MUTABLE_OK
@@ -186,6 +195,65 @@ def test_vad_flush_emits_final_speech(tmp_path: Path) -> None:
     assert vad.flushed is True
     assert recognizer.chunk_lengths == [800]
     assert payload["text"] == "Final"
+
+
+def test_transcribe_reports_processed_audio_position(tmp_path: Path) -> None:
+    progress: list[tuple[int, int]] = []
+
+    transcribe(
+        _prepared_wav(tmp_path, 1_024),
+        recognizer=FakeRecognizer(results=[]),
+        vad=FakeVad(pending=[]),
+        progress=lambda processed, total: progress.append((processed, total)),
+    )
+
+    assert progress == [(512, 1_024), (1_024, 1_024)]
+
+
+def test_transcribe_reports_activity_events(tmp_path: Path) -> None:
+    # Given: one voiced VAD segment with a reported language and word.
+    from sttx.asr_events import (
+        AsrActivity,
+        DecodeFinished,
+        DecodeStarted,
+        LanguageReported,
+        ScanAdvanced,
+        ScanFinished,
+        ScanStarted,
+        TranscriptionSummary,
+        VadSegmentReady,
+        WordCountUpdated,
+    )
+
+    events: list[AsrActivity] = []
+
+    # When: the decoder receives an activity callback.
+    transcribe(
+        _prepared_wav(tmp_path, 1_024),
+        recognizer=FakeRecognizer(
+            results=[FakeResult("Hello", (" Hello",), (0.0,), lang="en")]
+        ),
+        vad=FakeVad(pending=[_segment(0, 512)]),
+        activity=events.append,
+    )
+
+    # Then: all ASR lifecycle boundaries are surfaced in source order.
+    assert [type(event) for event in events] == [
+        ScanStarted,
+        ScanAdvanced,
+        ScanAdvanced,
+        VadSegmentReady,
+        DecodeStarted,
+        DecodeFinished,
+        LanguageReported,
+        WordCountUpdated,
+        ScanFinished,
+        TranscriptionSummary,
+    ]
+    summary = events[-1]
+    assert isinstance(summary, TranscriptionSummary)
+    assert summary.word_count == 1
+    assert summary.language == "en"
 
 
 def test_vad_windows_never_exceed_30_seconds(tmp_path: Path) -> None:
