@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -359,8 +360,9 @@ def test_verbose_prints_transcription_progress_to_stderr(
         progress: Callable[[int, int], None] | None = None,
         activity: ActivityCallback | None = None,
     ) -> Transcript:
-        del recognizer, vad, activity
+        del recognizer, vad
         assert progress is not None
+        assert activity is None
         progress(8_000, 16_000)
         progress(16_000, 16_000)
         return _transcript()
@@ -385,7 +387,7 @@ def test_verbose_prints_transcription_progress_to_stderr(
 
 def test_verbose_redraws_transcription_progress_in_terminal(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: an interactive stderr and a transcriber that emits two progress updates.
@@ -420,7 +422,7 @@ def test_verbose_redraws_transcription_progress_in_terminal(
     )
 
     # Then: progress redraws in place and completes before the next diagnostic line.
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert exit_code == 0
     assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
     assert "\r[+" in captured.err
@@ -429,13 +431,13 @@ def test_verbose_redraws_transcription_progress_in_terminal(
     assert "\r| " not in captured.err
     assert "\n  audio=" not in captured.err
     assert "00:00:01.000/00:00:01.000 rtf=" in captured.err
-    assert " eta=00:00:00.000\n[+" in captured.err
+    assert " eta=00:00:00.000\r\n[+" in captured.err
     assert "transcribe complete language=ru segments=1" in captured.err
 
 
 def test_verbose_elapsed_time_ticks_ten_times_per_second_in_terminal(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: a terminal renderer with a deterministic tenth-second ticker, thread, and clock.
@@ -477,8 +479,15 @@ def test_verbose_elapsed_time_ticks_ten_times_per_second_in_terminal(
             return None
 
     threads: list[TimerThread] = []
-    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
-    monkeypatch.setattr("sttx.cli.threading.Event", TimerStop)
+    terminal_checks = 0
+
+    def stderr_isatty() -> bool:
+        nonlocal terminal_checks
+        terminal_checks += 1
+        return terminal_checks == 1
+
+    monkeypatch.setattr(sys.stderr, "isatty", stderr_isatty)
+    monkeypatch.setattr("sttx.cli.LIVE_PROGRESS_STOP_FACTORY", TimerStop)
     monkeypatch.setattr("sttx.cli.threading.Thread", TimerThread)
     monkeypatch.setattr("sttx.cli.time.perf_counter", clock)
     media = tmp_path / "clip.mp4"
@@ -507,16 +516,107 @@ def test_verbose_elapsed_time_ticks_ten_times_per_second_in_terminal(
     )
 
     # Then: the same progress body redraws with elapsed time after 0.1 seconds.
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert exit_code == 0
+    assert terminal_checks == 1
     assert waits == [0.1, 0.1]
     assert "\r[+00:00:00.000] [##########----------] 50%" in captured.err
     assert "\r[+00:00:00.100] [##########----------] 50%" in captured.err
 
 
+def test_verbose_ticker_keeps_tenth_second_cadence_while_relay_writes_native_stderr(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: native stderr forwarding is blocked while the real ticker thread runs.
+    from sttx.cli import _NativeStderrRelay, run
+
+    waits: list[float] = []
+    ticks_enabled = threading.Event()
+    second_tick_due = threading.Event()
+    native_write_started = threading.Event()
+    release_native_write = threading.Event()
+
+    class Clock:
+        value: float = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+
+    class TimerStop:
+        def __init__(self) -> None:
+            self.stopped = threading.Event()
+
+        def wait(self, timeout: float) -> bool:
+            assert ticks_enabled.wait(timeout=1.0)
+            if len(waits) >= 2:
+                return self.stopped.wait()
+            waits.append(timeout)
+            clock.value += timeout
+            if len(waits) == 2:
+                second_tick_due.set()
+            return False
+
+        def set(self) -> None:
+            self.stopped.set()
+            ticks_enabled.set()
+
+    relay_write = _NativeStderrRelay._write
+
+    def block_native_write(relay: _NativeStderrRelay, payload: bytes) -> None:
+        if b"native warning" in payload:
+            native_write_started.set()
+            assert release_native_write.wait(timeout=1.0)
+        relay_write(relay, payload)
+
+    second_tick_observed: list[bool] = []
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr("sttx.cli.LIVE_PROGRESS_STOP_FACTORY", TimerStop)
+    monkeypatch.setattr("sttx.cli.time.perf_counter", clock)
+    monkeypatch.setattr(_NativeStderrRelay, "_write", block_native_write)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        os.write(2, b"native warning\n")
+        assert native_write_started.wait(timeout=1.0)
+        ticks_enabled.set()
+        second_tick_observed.append(second_tick_due.wait(timeout=0.5))
+        release_native_write.set()
+        return _transcript()
+
+    # When: verbose terminal progress runs through two timer wake-ups.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: relay backpressure does not delay either tenth-second progress frame.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    assert second_tick_observed == [True]
+    assert waits[:2] == [0.1, 0.1]
+    assert "\r[+00:00:00.100] [##########----------] 50%" in captured.err
+    assert "\r[+00:00:00.200] [##########----------] 50%" in captured.err
+
+
 def test_verbose_finishes_terminal_progress_before_cancellation(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    capfd: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: an interactive transcription interrupted after its first progress update.
@@ -547,11 +647,61 @@ def test_verbose_finishes_terminal_progress_before_cancellation(
     )
 
     # Then: cancellation starts on a fresh stderr line.
-    captured = capsys.readouterr()
+    captured = capfd.readouterr()
     assert exit_code == 130
     assert "\r[+" in captured.err
     assert "[##########----------] 50%" in captured.err
     assert "\nerror: cancelled by SIGINT\n" in captured.err
+
+
+def test_verbose_places_native_stderr_on_fresh_line_without_stopping_progress(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: an interactive transcription whose native dependency writes to fd 2.
+    from sttx.cli import run
+
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+
+    def transcribe(
+        _audio: FakePreparedAudio,
+        *,
+        recognizer: FakeRecognizer,
+        vad: FakeVad,
+        progress: Callable[[int, int], None] | None = None,
+        activity: ActivityCallback | None = None,
+    ) -> Transcript:
+        del recognizer, vad, activity
+        assert progress is not None
+        progress(8_000, 16_000)
+        os.write(
+            2,
+            b"/project/sherpa-onnx/csrc/circular-buffer.cc:Push:107 Overflow!\n",
+        )
+        progress(16_000, 16_000)
+        return _transcript()
+
+    # When: verbose terminal progress is interleaved with the native write.
+    exit_code = run(
+        [str(media), "-v", "--model-dir", str(tmp_path)],
+        _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
+        _cwd=tmp_path,
+    )
+
+    # Then: the bar remains visible before the native line and continues afterward.
+    captured = capfd.readouterr()
+    assert exit_code == 0
+    half_bar = "[##########----------] 50%"
+    native_warning = "/project/sherpa-onnx/csrc/circular-buffer.cc:Push:107 Overflow!"
+    full_bar = "[####################] 100%"
+    half_bar_index = captured.err.index(half_bar)
+    native_warning_index = captured.err.index(native_warning)
+    full_bar_index = captured.err.index(full_bar)
+    assert half_bar_index < native_warning_index < full_bar_index
+    assert captured.err[native_warning_index - 2 : native_warning_index] == "\r\n"
 
 
 def test_json_log_format_emits_structured_progress_and_preserves_stdout(

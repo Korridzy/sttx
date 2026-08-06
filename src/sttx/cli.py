@@ -13,6 +13,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
 from types import FrameType, TracebackType
 from typing import Generic, NoReturn, Protocol, Self, TypeVar, assert_never
 
@@ -64,6 +65,10 @@ USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
 PROGRESS_BAR_WIDTH: int = 20
 LIVE_PROGRESS_TICK_SECONDS: float = 0.1
+LIVE_PROGRESS_RENDER_PREFIX: bytes = b"\x00sttx-live-progress-render\x00"
+LIVE_PROGRESS_RENDER_SUFFIX: bytes = b"\x00sttx-live-progress-end\x00"
+LIVE_PROGRESS_FINISH: bytes = b"\x00sttx-live-progress-finish\x00"
+LIVE_PROGRESS_STOP_FACTORY: Callable[[], threading.Event] = threading.Event
 JsonLogField = str | int | float | bool | None | list[str]
 PreparedAudioT = TypeVar("PreparedAudioT", bound="_PreparedAudioResource")
 RecognizerT = TypeVar("RecognizerT")
@@ -142,6 +147,140 @@ class ShutdownRequested(BaseException):
         return f"cancelled by {signal.Signals(self.signum).name}"
 
 
+class _NativeStderrRelay:
+    __slots__: tuple[str, ...] = (
+        "destination_fd",
+        "pipe_read_fd",
+        "pipe_write_fd",
+        "thread",
+        "line_open",
+        "live_progress_visible",
+        "pending",
+    )
+    destination_fd: int
+    pipe_read_fd: int
+    pipe_write_fd: int
+    thread: Thread
+    line_open: bool
+    live_progress_visible: bool
+    pending: bytes
+
+    def __init__(self) -> None:
+        self.destination_fd = os.dup(2)
+        self.pipe_read_fd, self.pipe_write_fd = os.pipe()
+        self.thread = Thread(target=self._drain_native_stderr, daemon=False)
+        self.line_open = False
+        self.live_progress_visible = False
+        self.pending = b""
+
+    def start(self) -> None:
+        self.thread.start()
+        sys.stderr.flush()
+        os.dup2(self.pipe_write_fd, 2)
+        os.close(self.pipe_write_fd)
+
+    def close(self) -> None:
+        sys.stderr.flush()
+        os.dup2(self.destination_fd, 2)
+        self.thread.join()
+        os.close(self.pipe_read_fd)
+        os.close(self.destination_fd)
+
+    def render_live_progress(self, message: str) -> None:
+        os.write(
+            2,
+            LIVE_PROGRESS_RENDER_PREFIX
+            + message.encode()
+            + LIVE_PROGRESS_RENDER_SUFFIX,
+        )
+
+    def finish_live_progress(self) -> None:
+        os.write(2, LIVE_PROGRESS_FINISH)
+
+    def _drain_native_stderr(self) -> None:
+        while payload := os.read(self.pipe_read_fd, 4_096):
+            self.pending += payload
+            self._drain_pending()
+        self._forward_native(self.pending)
+
+    def _drain_pending(self) -> None:
+        while self.pending:
+            marker_index = self._next_marker_index()
+            if marker_index is None:
+                keep = self._incomplete_marker_tail_length()
+                native_length = len(self.pending) - keep
+                if native_length <= 0:
+                    return
+                self._forward_native(self.pending[:native_length])
+                self.pending = self.pending[native_length:]
+                continue
+            if marker_index > 0:
+                self._forward_native(self.pending[:marker_index])
+                self.pending = self.pending[marker_index:]
+                continue
+            if self.pending.startswith(LIVE_PROGRESS_FINISH):
+                self._finish_live_progress()
+                self.pending = self.pending[len(LIVE_PROGRESS_FINISH) :]
+                continue
+            suffix_index = self.pending.find(
+                LIVE_PROGRESS_RENDER_SUFFIX,
+                len(LIVE_PROGRESS_RENDER_PREFIX),
+            )
+            if suffix_index < 0:
+                return
+            message_start = len(LIVE_PROGRESS_RENDER_PREFIX)
+            message = self.pending[message_start:suffix_index]
+            self._render_live_progress(message)
+            self.pending = self.pending[
+                suffix_index + len(LIVE_PROGRESS_RENDER_SUFFIX) :
+            ]
+
+    def _next_marker_index(self) -> int | None:
+        render_index = self.pending.find(LIVE_PROGRESS_RENDER_PREFIX)
+        finish_index = self.pending.find(LIVE_PROGRESS_FINISH)
+        if render_index < 0:
+            return finish_index if finish_index >= 0 else None
+        if finish_index < 0:
+            return render_index
+        return min(render_index, finish_index)
+
+    def _incomplete_marker_tail_length(self) -> int:
+        longest_tail = 0
+        for marker in (LIVE_PROGRESS_RENDER_PREFIX, LIVE_PROGRESS_FINISH):
+            maximum_length = min(len(self.pending), len(marker) - 1)
+            for length in range(maximum_length, 0, -1):
+                if self.pending.endswith(marker[:length]):
+                    longest_tail = max(longest_tail, length)
+                    break
+        return longest_tail
+
+    def _render_live_progress(self, message: bytes) -> None:
+        if self.line_open and not self.live_progress_visible:
+            self._write(b"\n")
+        self._write(message)
+        self.line_open = True
+        self.live_progress_visible = True
+
+    def _finish_live_progress(self) -> None:
+        if self.live_progress_visible:
+            self._write(b"\n")
+            self.line_open = False
+            self.live_progress_visible = False
+
+    def _forward_native(self, payload: bytes) -> None:
+        if not payload:
+            return
+        self._finish_live_progress()
+        self._write(payload)
+        self.line_open = not payload.endswith(b"\n")
+
+    def _write(self, payload: bytes) -> None:
+        remaining = payload
+        while remaining:
+            written = os.write(self.destination_fd, remaining)
+            remaining = remaining[written:]
+
+
 class _VerboseProgress:
     __slots__: tuple[str, ...] = (
         "verbosity",
@@ -158,6 +297,7 @@ class _VerboseProgress:
         "live_progress_stop",
         "live_progress_thread",
         "live_progress_body",
+        "native_stderr_relay",
     )
     verbosity: int
     debug: bool
@@ -173,6 +313,7 @@ class _VerboseProgress:
     live_progress_stop: threading.Event | None
     live_progress_thread: threading.Thread | None
     live_progress_body: str | None
+    native_stderr_relay: _NativeStderrRelay | None
 
     def __init__(
         self,
@@ -195,6 +336,7 @@ class _VerboseProgress:
         self.live_progress_stop = None
         self.live_progress_thread = None
         self.live_progress_body = None
+        self.native_stderr_relay = None
 
     def report(self, message: str, /, *, event: str, **fields: JsonLogField) -> None:
         if self.verbosity > 0:
@@ -261,9 +403,16 @@ class _VerboseProgress:
             thread.join()
         with self.live_progress_lock:
             if self.live_progress_width > 0:
-                print(file=sys.stderr)
+                if self.native_stderr_relay is None:
+                    print(file=sys.stderr)
+                else:
+                    self.native_stderr_relay.finish_live_progress()
                 self.live_progress_width = 0
             self.live_progress_body = None
+            native_stderr_relay = self.native_stderr_relay
+            self.native_stderr_relay = None
+        if native_stderr_relay is not None:
+            native_stderr_relay.close()
 
     def start_transcription(self) -> None:
         self._finish_live_progress()
@@ -274,12 +423,15 @@ class _VerboseProgress:
         self.decode_elapsed = 0.0
         if self.verbosity <= 0 or self.debug or self.json_logging or not sys.stderr.isatty():
             return
-        stop = threading.Event()
+        stop = LIVE_PROGRESS_STOP_FACTORY()
         thread = threading.Thread(
             target=lambda: self._spin_live_progress(stop),
             daemon=False,
         )
         with self.live_progress_lock:
+            native_stderr_relay = _NativeStderrRelay()
+            native_stderr_relay.start()
+            self.native_stderr_relay = native_stderr_relay
             self.live_progress_stop = stop
             self.live_progress_thread = thread
         thread.start()
@@ -309,8 +461,12 @@ class _VerboseProgress:
         elapsed = time.perf_counter() - self.started
         message = f"[+{_format_duration(elapsed)}] {self.live_progress_body}"
         padding = " " * max(self.live_progress_width - len(message), 0)
-        sys.stderr.write(f"\r{message}{padding}")
-        sys.stderr.flush()
+        rendered = f"\r{message}{padding}\r"
+        if self.native_stderr_relay is None:
+            sys.stderr.write(rendered)
+            sys.stderr.flush()
+        else:
+            self.native_stderr_relay.render_live_progress(rendered)
         self.live_progress_width = len(message)
 
     def report_transcription(self, processed_samples: int, total_samples: int) -> None:
@@ -471,7 +627,7 @@ class _VerboseProgress:
         if not self.debug and not self.json_logging:
             completed_units = percent * PROGRESS_BAR_WIDTH // 100
             progress_bar = "#" * completed_units + "-" * (PROGRESS_BAR_WIDTH - completed_units)
-            if sys.stderr.isatty():
+            if self.native_stderr_relay is not None:
                 self._update_live_progress(
                     " ".join(
                         (
