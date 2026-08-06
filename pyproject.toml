@@ -3,7 +3,7 @@ name = "sttx"
 version = "0.1.0"
 description = "Local CPU transcription with Parakeet and sherpa-onnx"
 readme = "README.md"
-license = "Apache-2.0"
+license = "GPL-3.0-only"
 license-files = ["LICENSE*", "NOTICE*"]
 authors = [
     { name = "Korridzy", email = "korridzy@yandex.ru" },

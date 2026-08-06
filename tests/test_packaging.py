@@ -169,7 +169,7 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert package_metadata["Name"] == "sttx"
     assert package_metadata["Version"] == "0.1.0"
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
-    assert package_metadata["License-Expression"] == "Apache-2.0"
+    assert package_metadata["License-Expression"] == "GPL-3.0-only"
     assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
     assert sorted(package_metadata.get_all("Requires-Dist") or []) == [
         "huggingface-hub",
