@@ -1,12 +1,12 @@
 [project]
 name = "sttx"
 version = "0.1.0"
-description = "Local CPU transcription with Parakeet and sherpa-onnx"
+description = "Fast, private, and simple transcription for any media file using local models, even without a GPU"
 readme = "README.md"
 license = "GPL-3.0-only"
 license-files = ["LICENSE*", "NOTICE*"]
 authors = [
-    { name = "Korridzy", email = "korridzy@yandex.ru" },
+    { name = "Korridzy", email = "korridzy.pub@gmail.com" },
 ]
 requires-python = ">=3.11,<3.14"
 dependencies = [
