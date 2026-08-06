@@ -65,16 +65,16 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o OUTPUT] [-d OUTDIR] [--model-dir MODEL_DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
+sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
 - `-h`, `--help` — show usage and exit.
-- `-o OUTPUT`, `--output OUTPUT` — output filename stem. The program adds
+- `-o STEM`, `--output-name STEM` — output filename stem. The program adds
   `.json` and `.txt`; a path or an existing suffix is rejected.
-- `-d OUTDIR`, `--outdir OUTDIR` — output directory. Relative paths are
+- `-d DIR`, `--outdir DIR` — output directory. Relative paths are
   resolved from the current directory; the default is `./transcriptions`.
-- `--model-dir MODEL_DIR` — use a local, offline model bundle instead of
+- `--model-dir DIR` — use a local, offline model bundle instead of
   acquiring model assets.
 - `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
   transcription progress to stderr. Text logs include a 20-character ASCII
