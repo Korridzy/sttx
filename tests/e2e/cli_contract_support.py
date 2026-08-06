@@ -190,7 +190,7 @@ def run_success(context: RunContext) -> RunResult:
     if context.case.outdir is not None:
         argv.extend(("--outdir", str(context.case.outdir)))
     if context.case.name is not None:
-        argv.extend(("--output", context.case.name))
+        argv.extend(("--output-name", context.case.name))
     exit_code = cli.run(
         argv,
         _dependencies=RunnerDependencies(
