@@ -188,6 +188,6 @@ Silence/no speech is a successful result with `text: ""`, an empty
 
 ## Attribution and licensing
 
-`sttx` source code is licensed under the [Apache License 2.0](LICENSE).
+`sttx` source code is licensed under the [GNU General Public License v3.0 only](LICENSE).
 Third-party software and model assets remain subject to their own terms; see
 [NOTICE.md](NOTICE.md) for attribution and primary upstream license links.

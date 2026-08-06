@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 `sttx` combines the following upstream software, model, and model-conversion
-artifacts. Their terms remain separate from the Apache-2.0 license that applies
+artifacts. Their terms remain separate from the GPL-3.0-only license that applies
 to `sttx` source code.
 
 ## sherpa-onnx
