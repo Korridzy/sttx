@@ -15,9 +15,27 @@ dependencies = [
     "huggingface-hub",
     "numpy",
 ]
+keywords = ["speech-to-text", "transcription", "asr", "sherpa-onnx", "parakeet", "cli", "offline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 
 [project.scripts]
 sttx = "sttx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Korridzy/sttx"
+Repository = "https://github.com/Korridzy/sttx"
+Issues = "https://github.com/Korridzy/sttx/issues"
+Changelog = "https://github.com/Korridzy/sttx/releases"
 
 [dependency-groups]
 dev = [

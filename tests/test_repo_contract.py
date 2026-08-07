@@ -25,7 +25,6 @@ REQUIRED_FILES = frozenset(
     }
 )
 FORBIDDEN_PREFIXES = (
-    ".github/",
     "deploy/",
     "deployment/",
     "doc/",

@@ -4,19 +4,20 @@ import json
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import TypeAlias
 
 import pytest
 
-type JsonValue = (
+JsonValue: TypeAlias = (
     None
     | bool
     | int
     | float
     | str
-    | list[JsonValue]
-    | Mapping[str, JsonValue]
+    | list["JsonValue"]
+    | Mapping[str, "JsonValue"]
 )
-type IdentityWriter = Callable[[Mapping[str, JsonValue]], None]
+IdentityWriter: TypeAlias = Callable[[Mapping[str, JsonValue]], None]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
