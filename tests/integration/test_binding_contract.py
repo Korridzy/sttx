@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, TypeGuard, TypedDict
+from typing import Protocol, TypeAlias, TypeGuard, TypedDict
 
 import numpy as np
 import pytest
@@ -35,14 +35,14 @@ RUNTIME_PACKAGES = (
     "sttx",
 )
 
-type JsonValue = (
+JsonValue: TypeAlias = (
     None
     | bool
     | int
     | float
     | str
-    | Sequence[JsonValue]
-    | Mapping[str, JsonValue]
+    | Sequence["JsonValue"]
+    | Mapping[str, "JsonValue"]
 )
 
 
