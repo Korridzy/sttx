@@ -4,6 +4,7 @@ import wave
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ from sttx.output import TranscriptJson
 
 SAMPLE_RATE = 16_000
 MAX_CHUNK_SAMPLES = 480_000
-type FloatSamples = NDArray[np.float32]
+FloatSamples: TypeAlias = NDArray[np.float32]
 
 
 @dataclass(frozen=True, slots=True)

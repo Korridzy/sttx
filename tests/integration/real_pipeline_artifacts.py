@@ -12,16 +12,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
-type JsonValue = (
+JsonValue: TypeAlias = (
     None
     | bool
     | int
     | float
     | str
-    | Sequence[JsonValue]
-    | Mapping[str, JsonValue]
+    | Sequence["JsonValue"]
+    | Mapping[str, "JsonValue"]
 )
 
 RUNTIME_PACKAGES = (

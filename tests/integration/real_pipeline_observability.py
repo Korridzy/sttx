@@ -3,7 +3,7 @@ from __future__ import annotations
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
@@ -15,7 +15,7 @@ from sttx.audio import PreparedAudio
 from sttx.cli import _make_vad_from_bundle
 from sttx.model import ModelBundle
 
-type FloatSamples = NDArray[np.float32]
+FloatSamples: TypeAlias = NDArray[np.float32]
 
 
 class BundleLike(Protocol):
