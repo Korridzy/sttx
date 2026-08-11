@@ -11,8 +11,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_WHEEL = "sttx-0.1.0-py3-none-any.whl"
-DIST_INFO = "sttx-0.1.0.dist-info"
+EXPECTED_WHEEL = "sttx-0.1.1-py3-none-any.whl"
+DIST_INFO = "sttx-0.1.1.dist-info"
 EXPECTED_SOURCES = {
     "sttx/__init__.py",
     "sttx/asr.py",
@@ -63,7 +63,7 @@ def test_pep_621_metadata_defines_supported_console_distribution() -> None:
 
     # Then: the supported distribution contract is explicit and version bounded.
     assert project["name"] == "sttx"
-    assert project["version"] == "0.1.0"
+    assert project["version"] == "0.1.1"
     assert project["requires-python"] == ">=3.11,<3.14"
     assert scripts == {"sttx": "sttx.cli:main"}
 
@@ -167,7 +167,7 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert wheel_metadata["Root-Is-Purelib"] == "true"
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
     assert package_metadata["Name"] == "sttx"
-    assert package_metadata["Version"] == "0.1.0"
+    assert package_metadata["Version"] == "0.1.1"
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
     assert package_metadata["License-Expression"] == "GPL-3.0-only"
     assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
