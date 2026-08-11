@@ -72,7 +72,15 @@ def normalize_media(input_path: Path) -> PreparedAudio:
     if not os.access(input_path, os.R_OK):
         raise AudioEnvironmentError(path=input_path, reason="input is not readable")
     if shutil.which("ffmpeg") is None:
-        raise AudioEnvironmentError(path=input_path, reason="ffmpeg is not available")
+        raise AudioEnvironmentError(
+            path=input_path,
+            reason=(
+                "ffmpeg is not available\n"
+                "sttx uses ffmpeg to prepare media for transcription. Install "
+                "ffmpeg and make it available on PATH: "
+                "https://ffmpeg.org/download.html"
+            ),
+        )
 
     try:
         descriptor, raw_temp_path = tempfile.mkstemp(suffix=".wav")

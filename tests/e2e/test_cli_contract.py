@@ -139,7 +139,11 @@ def test_error_and_silence_contracts(
     monkeypatch.setattr("shutil.which", lambda _command: None)
     missing_ffmpeg = run_error([str(media), *error_args], capsys, bundle)
     assert missing_ffmpeg.exit_code == 1
-    assert missing_ffmpeg.stderr == f"error: cannot prepare audio from {media}: ffmpeg is not available\n"
+    assert missing_ffmpeg.stderr == (
+        f"error: cannot prepare audio from {media}: ffmpeg is not available\n"
+        "sttx uses ffmpeg to prepare media for transcription. Install ffmpeg "
+        "and make it available on PATH: https://ffmpeg.org/download.html\n"
+    )
     monkeypatch.undo()
 
     no_audio = generate_no_audio_mp4(tmp_path)
