@@ -7,47 +7,32 @@ transcripts.
 
 ## Installation
 
-### Prerequisite
+`sttx` officially supports Linux and requires Python 3.11, 3.12, or 3.13. Its
+native dependencies also publish macOS and Windows packages, but `sttx` uses
+Unix process-group APIs and its process lifecycle is currently tested only on
+Linux.
+
+### Install ffmpeg
 
 Install `ffmpeg` separately and make sure it is available on `PATH`. The
 application invokes it for every input, including WAV files that already have
 the target format.
 
-### Install the built wheel
+### Install sttx from PyPI
 
-The package produces a pure-Python wheel. Build it with Poetry, then install
-that wheel into the target environment:
+Install the published [`sttx` package from PyPI](https://pypi.org/project/sttx/):
 
 ```bash
-poetry build
-python -m venv .venv-sttx
-. .venv-sttx/bin/activate
-python -m pip install dist/sttx-0.1.0-py3-none-any.whl
+python -m pip install sttx
 sttx --version
-deactivate
 ```
 
-The wheel installs the `sttx` console command and its runtime dependencies.
-
-### Development environment
-
-This repository keeps Poetry's virtual environment in `.venv/`:
-
-```bash
-poetry install
-poetry env info --path
-poetry check
-poetry run pytest
-poetry run python -m compileall -q src tests
-poetry run sttx --help
-poetry run sttx --version
-poetry build
-```
+This installs the `sttx` console command and its Python runtime dependencies.
 
 ## Quickstart
 
 ```bash
-poetry run sttx recording.mp4
+sttx recording.mp4
 ```
 
 The default output directory is `./transcriptions`. For `recording.mp4`, a
@@ -185,6 +170,22 @@ Hello world.
 
 Silence/no speech is a successful result with `text: ""`, an empty
 `segments` array, and `warning: no speech detected` on stderr.
+
+## Development
+
+From a source checkout, Poetry creates the project's virtual environment in
+`.venv/`:
+
+```bash
+poetry install
+poetry env info --path
+poetry check
+poetry run pytest
+poetry run python -m compileall -q src tests
+poetry run sttx --help
+poetry run sttx --version
+poetry build
+```
 
 ## Attribution and licensing
 
