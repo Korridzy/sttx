@@ -146,7 +146,14 @@ def test_parser_contract() -> None:
     assert namespace.model_dir == Path("models")
     assert namespace.verbose == 1
     assert parser.parse_args(["media.mp4"]).ts is False
-    assert parser.parse_args(["media.mp4", "--ts"]).ts is True
+    assert parser.parse_args(["media.mp4", "-ts"]).ts is True
+    assert parser.parse_args(["media.mp4", "--timestamp"]).ts is True
+    try:
+        _ = parser.parse_args(["media.mp4", "--ts"])
+    except CliRuntimeError:
+        pass
+    else:
+        pytest.fail("the retired --ts spelling must be rejected")
     assert parser.parse_args(["media.mp4"]).debug is False
     assert parser.parse_args(["media.mp4", "--debug"]).debug is True
     assert parser.parse_args(["media.mp4"]).log_format == "text"
@@ -334,7 +341,7 @@ def test_timestamp_option_reaches_output_writer(
 
     # When: default and timestamp modes complete through the same writer seam.
     expected_paths = paths
-    for arguments in ([], ["--ts"]):
+    for arguments in ([], ["--timestamp"]):
         exit_code = run(
             [str(media), "--model-dir", str(tmp_path), *arguments],
             _dependencies=_fake_dependencies(tmp_path),

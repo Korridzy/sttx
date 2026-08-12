@@ -721,7 +721,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="use an offline local model bundle; it must contain all required assets",
     )
     parser.add_argument(
-        "--ts",
+        "-ts",
+        "--timestamp",
+        dest="ts",
         action="store_true",
         help="write each TXT line as [HH:MM:SS.mmm --> HH:MM:SS.mmm] text",
     )

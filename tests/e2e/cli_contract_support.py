@@ -189,7 +189,7 @@ def run_success(context: RunContext) -> RunResult:
 
     argv = [str(context.media), "--model-dir", str(context.cwd)]
     if context.timestamps:
-        argv.append("--ts")
+        argv.append("-ts")
     if context.case.outdir is not None:
         argv.extend(("--outdir", str(context.case.outdir)))
     if context.case.name is not None:
