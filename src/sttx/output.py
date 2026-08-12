@@ -5,7 +5,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, Protocol, TypedDict
 
 JSON_SUFFIX: Final = ".json"
 TXT_SUFFIX: Final = ".txt"
@@ -90,6 +90,16 @@ class Transcript:
 class OutputPaths:
     json_path: Path
     txt_path: Path
+
+
+class OutputWriter(Protocol):
+    def __call__(
+        self,
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None: ...
 
 
 def normalize_segment_text(text: str) -> str:
