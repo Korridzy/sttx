@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 
@@ -73,6 +74,125 @@ def test_utf8_indented_schema(tmp_path: Path) -> None:
     assert b'  "task": "transcribe"' in json_bytes
     assert read_json(paths.json_path) == expected
     assert paths.txt_path.read_bytes().decode("utf-8") == expected["text"]
+
+
+@pytest.mark.parametrize("timestamps", [None, False])
+def test_json_and_txt_bytes_are_compatible_by_default(
+    tmp_path: Path,
+    timestamps: bool | None,
+) -> None:
+    # Given: the canonical transcript and its pre-timestamp golden outputs.
+    paths = output_paths(
+        Path("voice.mp4"),
+        outdir=tmp_path,
+        name=f"compatible-{timestamps}",
+        cwd=tmp_path,
+    )
+    expected_json = Path("tests/fixtures/output_transcript.json").read_bytes()
+    expected_txt = "Привет мир Финальная фраза без точки".encode()
+
+    # When: outputs are written through the default or explicit false mode.
+    if timestamps is None:
+        write_outputs(russian_transcript(), paths)
+    else:
+        write_outputs(russian_transcript(), paths, timestamps=timestamps)
+
+    # Then: both files retain their exact legacy bytes.
+    assert paths.json_path.read_bytes() == expected_json
+    assert paths.txt_path.read_bytes() == expected_txt
+
+
+def test_timestamped_txt_uses_normalized_nonempty_segments(tmp_path: Path) -> None:
+    # Given: raw Cyrillic segment timings and a normalized-empty middle segment.
+    transcript = Transcript(
+        language="ru",
+        duration=12.345,
+        segments=(
+            Segment(id=0, start=0.004, end=1.234, text="  Привет\t\nмир  "),
+            Segment(id=1, start=1.234, end=2.345, text=" \t\n "),
+            Segment(id=2, start=2.345, end=12.345, text="Финальная   фраза без точки"),
+        ),
+    )
+    plain_paths = output_paths(Path("voice.mp4"), tmp_path, "plain", tmp_path)
+    timestamp_paths = output_paths(Path("voice.mp4"), tmp_path, "timestamp", tmp_path)
+    write_outputs(transcript, plain_paths)
+
+    # When: the same transcript is written in timestamp mode.
+    write_outputs(transcript, timestamp_paths, timestamps=True)
+
+    # Then: TXT is exact UTF-8 without a trailing newline, while JSON is mode-independent.
+    assert timestamp_paths.txt_path.read_bytes() == (
+        "[00:00:00.004 --> 00:00:01.234] Привет мир\n"
+        "[00:00:02.345 --> 00:00:12.345] Финальная фраза без точки"
+    ).encode()
+    assert timestamp_paths.json_path.read_bytes() == plain_paths.json_path.read_bytes()
+    assert read_json(timestamp_paths.json_path)["segments"] == [
+        {"id": 0, "start": 0.0, "end": 1.23, "text": "Привет мир"},
+        {"id": 1, "start": 1.23, "end": 2.35, "text": ""},
+        {"id": 2, "start": 2.35, "end": 12.35, "text": "Финальная фраза без точки"},
+    ]
+
+
+def test_timestamp_rounding_uses_raw_seconds(tmp_path: Path) -> None:
+    # Given: carry, long-clock, nearest-even tie, and sub-millisecond raw timings.
+    transcript = Transcript(
+        language="auto",
+        duration=4523.0067,
+        segments=(
+            Segment(id=0, start=0.0005, end=0.0015, text="ties"),
+            Segment(
+                id=1,
+                start=math.nextafter(3599.9995, math.inf),
+                end=4523.0067,
+                text="long clock",
+            ),
+            Segment(id=2, start=1.2341, end=1.2344, text="equal clocks"),
+        ),
+    )
+    paths = output_paths(Path("voice.mp4"), tmp_path, "rounding", tmp_path)
+
+    # When: timestamped output is serialized from the raw segment floats.
+    write_outputs(transcript, paths, timestamps=True)
+
+    # Then: millisecond clocks follow round(seconds * 1000), independent of JSON precision.
+    assert paths.txt_path.read_bytes() == (
+        b"[00:00:00.000 --> 00:00:00.002] ties\n"
+        b"[01:00:00.000 --> 01:15:23.007] long clock\n"
+        b"[00:00:01.234 --> 00:00:01.234] equal clocks"
+    )
+    assert read_json(paths.json_path)["segments"] == [
+        {"id": 0, "start": 0.0, "end": 0.0, "text": "ties"},
+        {"id": 1, "start": 3600.0, "end": 4523.01, "text": "long clock"},
+        {"id": 2, "start": 1.23, "end": 1.23, "text": "equal clocks"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        Transcript(language="auto", duration=0.0, segments=()),
+        Transcript(
+            language="auto",
+            duration=2.0,
+            segments=(Segment(id=0, start=0.0, end=2.0, text=" \t\n "),),
+        ),
+    ],
+)
+def test_timestamped_silence_or_all_empty_writes_zero_txt_bytes(
+    tmp_path: Path,
+    transcript: Transcript,
+) -> None:
+    # Given: a silent or normalized-empty transcript.
+    paths = output_paths(Path("voice.mp4"), tmp_path, "empty", tmp_path)
+
+    # When: timestamped output is written.
+    write_outputs(transcript, paths, timestamps=True)
+
+    # Then: TXT is empty while JSON retains every source segment.
+    assert paths.txt_path.read_bytes() == b""
+    assert read_json(paths.json_path)["segments"] == [
+        segment.to_dict() for segment in transcript.segments
+    ]
 
 
 @pytest.mark.parametrize(
@@ -170,9 +290,11 @@ def test_output_paths_and_overwrite(tmp_path: Path) -> None:
     assert paths.txt_path.read_text(encoding="utf-8") == "Привет мир Финальная фраза без точки"
 
 
-def test_staging_files_are_cleaned_on_failure(
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_timestamp_staging_files_are_cleaned_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    timestamps: bool,
 ) -> None:
     # Given: stale finals and an injected failure on the second atomic replace.
     paths = output_paths(Path("clip.mp4"), outdir=tmp_path, name="atomic", cwd=tmp_path)
@@ -191,7 +313,7 @@ def test_staging_files_are_cleaned_on_failure(
 
     # When: the second final replacement fails.
     with pytest.raises(OutputWriteError):
-        write_outputs(russian_transcript(), paths)
+        write_outputs(russian_transcript(), paths, timestamps=timestamps)
 
     # Then: staging siblings are removed and per-file atomicity is preserved.
     assert paths.json_path.read_text(encoding="utf-8") != "stale json"
