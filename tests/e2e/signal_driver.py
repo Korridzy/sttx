@@ -239,7 +239,13 @@ def _execute(phase: str, root: Path) -> int:
             segments=(Segment(id=0, start=0.0, end=1.0, text="new text"),),
         )
 
-    def write_outputs(transcript: Transcript, paths: OutputPaths) -> None:
+    def write_outputs(
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None:
+        assert timestamps is False
         _write_for_phase(phase, transcript, paths, ready)
 
     previous = {
