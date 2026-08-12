@@ -50,7 +50,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [--ts] [-v] [--debug] [--log-format {text,json}] [--version] media
+sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-ts] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -61,7 +61,8 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [--ts] [-v] [--debug] [--log-form
   resolved from the current directory; the default is `./transcriptions`.
 - `--model-dir DIR` — use a local, offline model bundle instead of
   acquiring model assets.
-- `--ts` — write each TXT line as `[HH:MM:SS.mmm --> HH:MM:SS.mmm] text`.
+- `-ts`, `--timestamp` — write each TXT line as
+  `[HH:MM:SS.mmm --> HH:MM:SS.mmm] text`.
   This affects TXT contents only; JSON is unchanged.
 - `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
   transcription progress to stderr. Text logs include a 20-character ASCII
@@ -139,7 +140,7 @@ silero_vad.onnx
 
 ## Output files
 
-The JSON file is invariant whether or not you pass `--ts`. It is UTF-8, uses
+The JSON file is invariant whether or not you pass `-ts` or `--timestamp`. It is UTF-8, uses
 two-space indentation, and keeps non-ASCII text unescaped. Its `text` field is
 the segment text joined with single spaces. Every object in `segments` has
 numeric `start` and `end` fields, rounded to two decimal places. `duration` is
@@ -164,14 +165,14 @@ For example, one short transcript may be:
 }
 ```
 
-Without `--ts`, the matching TXT file contains exactly the value of JSON
+Without `-ts` or `--timestamp`, the matching TXT file contains exactly the value of JSON
 `text`, with no additional newline or other bytes:
 
 ```text
 Hello world.
 ```
 
-With `--ts`, TXT contains one normalized non-empty segment per line. Each line
+With `-ts` or `--timestamp`, TXT contains one normalized non-empty segment per line. Each line
 uses raw segment timing rounded to milliseconds; hours are unbounded and use at
 least two digits. The file has no trailing newline:
 
@@ -179,7 +180,7 @@ least two digits. The file has no trailing newline:
 [00:00:00.000 --> 00:00:03.200] Hello world.
 ```
 
-`--ts` affects TXT contents only. It does not change JSON, including the
+`-ts` and `--timestamp` affect TXT contents only. They do not change JSON, including the
 top-level `text` field or the numeric `start` and `end` fields in `segments`.
 
 Silence/no speech is a successful result with `text: ""`, an empty `segments`
