@@ -50,7 +50,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
+sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [--ts] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -61,6 +61,8 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {tex
   resolved from the current directory; the default is `./transcriptions`.
 - `--model-dir DIR` — use a local, offline model bundle instead of
   acquiring model assets.
+- `--ts` — write each TXT line as `[HH:MM:SS.mmm --> HH:MM:SS.mmm] text`.
+  This affects TXT contents only; JSON is unchanged.
 - `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
   transcription progress to stderr. Text logs include a 20-character ASCII
   bar, processed audio position, real-time factor, estimated time remaining,
@@ -137,10 +139,11 @@ silero_vad.onnx
 
 ## Output files
 
-The JSON file is UTF-8, uses two-space indentation, and keeps non-ASCII text
-unescaped. Its `text` field is the segment text joined with single spaces.
-`duration`, `start`, and `end` are rounded to two decimal places; segment IDs
-start at zero.
+The JSON file is invariant whether or not you pass `--ts`. It is UTF-8, uses
+two-space indentation, and keeps non-ASCII text unescaped. Its `text` field is
+the segment text joined with single spaces. Every object in `segments` has
+numeric `start` and `end` fields, rounded to two decimal places. `duration` is
+also rounded to two decimal places, and segment IDs start at zero.
 
 For example, one short transcript may be:
 
@@ -161,15 +164,27 @@ For example, one short transcript may be:
 }
 ```
 
-The matching TXT file contains exactly the value of JSON `text`, with no
-additional newline or other bytes:
+Without `--ts`, the matching TXT file contains exactly the value of JSON
+`text`, with no additional newline or other bytes:
 
 ```text
 Hello world.
 ```
 
-Silence/no speech is a successful result with `text: ""`, an empty
-`segments` array, and `warning: no speech detected` on stderr.
+With `--ts`, TXT contains one normalized non-empty segment per line. Each line
+uses raw segment timing rounded to milliseconds; hours are unbounded and use at
+least two digits. The file has no trailing newline:
+
+```text
+[00:00:00.000 --> 00:00:03.200] Hello world.
+```
+
+`--ts` affects TXT contents only. It does not change JSON, including the
+top-level `text` field or the numeric `start` and `end` fields in `segments`.
+
+Silence/no speech is a successful result with `text: ""`, an empty `segments`
+array, and `warning: no speech detected` on stderr. In either TXT mode, it
+writes an empty TXT file.
 
 ## Development
 
