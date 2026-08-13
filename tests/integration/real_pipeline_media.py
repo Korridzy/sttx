@@ -22,7 +22,7 @@ class TranscriptCheck:
     duration: float
     segment_count: int
     monotonic: bool
-    json_txt_equal: bool
+    txt_matches_segments: bool
 
 
 def ffmpeg_path() -> str:
@@ -124,12 +124,17 @@ def read_transcript(json_path: Path, txt_path: Path) -> TranscriptCheck:
     monotonic = all(left <= right for left, right in zip(starts, starts[1:]))
     monotonic = monotonic and all(start <= end for start, end in zip(starts, ends))
     text = str(payload["text"])
+    txt_text = "\n".join(
+        " ".join(str(segment["text"]).split())
+        for segment in segments
+        if str(segment["text"]).split()
+    )
     return TranscriptCheck(
         text=text,
         duration=float(payload["duration"]),
         segment_count=len(segments),
         monotonic=monotonic,
-        json_txt_equal=txt_path.read_text(encoding="utf-8") == text,
+        txt_matches_segments=txt_path.read_text(encoding="utf-8") == txt_text,
     )
 
 
