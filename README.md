@@ -165,8 +165,9 @@ For example, one short transcript may be:
 }
 ```
 
-Without `-ts` or `--timestamp`, the matching TXT file contains exactly the value of JSON
-`text`, with no additional newline or other bytes:
+Without `-ts` or `--timestamp`, the matching TXT file contains one normalized non-empty
+segment per line, with no trailing newline. JSON `text` remains the same segments joined
+with single spaces:
 
 ```text
 Hello world.
