@@ -122,6 +122,14 @@ def timestamped_text(transcript: Transcript) -> str:
     )
 
 
+def plain_text(transcript: Transcript) -> str:
+    return "\n".join(
+        text
+        for segment in transcript.segments
+        if (text := normalize_segment_text(segment.text))
+    )
+
+
 def output_paths(
     input_path: Path,
     outdir: Path | None,
@@ -148,7 +156,7 @@ def write_outputs(
     txt_tmp: Path | None = None
     try:
         json_tmp = write_temp(paths.json_path, json_payload(transcript))
-        txt_contents = timestamped_text(transcript) if timestamps else transcript.text
+        txt_contents = timestamped_text(transcript) if timestamps else plain_text(transcript)
         txt_tmp = write_temp(paths.txt_path, txt_contents)
         replace_temp(json_tmp, paths.json_path)
         json_tmp = None

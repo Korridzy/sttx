@@ -31,7 +31,9 @@ def read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_json_and_txt_share_joined_segment_text(tmp_path: Path) -> None:
+def test_json_keeps_joined_text_while_plain_txt_preserves_segment_blocks(
+    tmp_path: Path,
+) -> None:
     # Given: a transcript with whitespace noise and a trailing unpunctuated segment.
     paths = output_paths(
         Path("source.mp4"),
@@ -52,9 +54,9 @@ def test_json_and_txt_share_joined_segment_text(tmp_path: Path) -> None:
     # When: outputs are written.
     write_outputs(transcript, paths)
 
-    # Then: JSON text and TXT are the same normalized segment join.
+    # Then: JSON remains joined while TXT preserves normalized nonempty segments.
     assert read_json(paths.json_path)["text"] == "первая фраза финал без точки"
-    assert paths.txt_path.read_text(encoding="utf-8") == "первая фраза финал без точки"
+    assert paths.txt_path.read_text(encoding="utf-8") == "первая фраза\nфинал без точки"
 
 
 def test_utf8_indented_schema(tmp_path: Path) -> None:
@@ -73,15 +75,17 @@ def test_utf8_indented_schema(tmp_path: Path) -> None:
     assert b"\\u041f" not in json_bytes
     assert b'  "task": "transcribe"' in json_bytes
     assert read_json(paths.json_path) == expected
-    assert paths.txt_path.read_bytes().decode("utf-8") == expected["text"]
+    assert paths.txt_path.read_bytes().decode("utf-8") == (
+        "Привет мир\nФинальная фраза без точки"
+    )
 
 
 @pytest.mark.parametrize("timestamps", [None, False])
-def test_json_and_txt_bytes_are_compatible_by_default(
+def test_json_and_plain_txt_bytes_preserve_their_distinct_layouts(
     tmp_path: Path,
     timestamps: bool | None,
 ) -> None:
-    # Given: the canonical transcript and its pre-timestamp golden outputs.
+    # Given: the canonical transcript and stable JSON/TXT layouts.
     paths = output_paths(
         Path("voice.mp4"),
         outdir=tmp_path,
@@ -89,7 +93,7 @@ def test_json_and_txt_bytes_are_compatible_by_default(
         cwd=tmp_path,
     )
     expected_json = Path("tests/fixtures/output_transcript.json").read_bytes()
-    expected_txt = "Привет мир Финальная фраза без точки".encode()
+    expected_txt = "Привет мир\nФинальная фраза без точки".encode()
 
     # When: outputs are written through the default or explicit false mode.
     if timestamps is None:
@@ -97,7 +101,7 @@ def test_json_and_txt_bytes_are_compatible_by_default(
     else:
         write_outputs(russian_transcript(), paths, timestamps=timestamps)
 
-    # Then: both files retain their exact legacy bytes.
+    # Then: both files retain their exact public bytes.
     assert paths.json_path.read_bytes() == expected_json
     assert paths.txt_path.read_bytes() == expected_txt
 
@@ -124,6 +128,9 @@ def test_timestamped_txt_uses_normalized_nonempty_segments(tmp_path: Path) -> No
     assert timestamp_paths.txt_path.read_bytes() == (
         "[00:00:00.004 --> 00:00:01.234] Привет мир\n"
         "[00:00:02.345 --> 00:00:12.345] Финальная фраза без точки"
+    ).encode()
+    assert plain_paths.txt_path.read_bytes() == (
+        "Привет мир\nФинальная фраза без точки"
     ).encode()
     assert timestamp_paths.json_path.read_bytes() == plain_paths.json_path.read_bytes()
     assert read_json(timestamp_paths.json_path)["segments"] == [
@@ -287,7 +294,7 @@ def test_output_paths_and_overwrite(tmp_path: Path) -> None:
     assert paths.json_path.parent == tmp_path / "a/b"
     assert paths.json_path.parent.is_dir()
     assert read_json(paths.json_path)["text"] == "Привет мир Финальная фраза без точки"
-    assert paths.txt_path.read_text(encoding="utf-8") == "Привет мир Финальная фраза без точки"
+    assert paths.txt_path.read_text(encoding="utf-8") == "Привет мир\nФинальная фраза без точки"
 
 
 @pytest.mark.parametrize("timestamps", [False, True])
