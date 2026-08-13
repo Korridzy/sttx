@@ -95,7 +95,7 @@ def test_formats_names_overwrite_schema_streams_and_cleanup(
         assert not result.prepared_path.exists()
         payload = read_payload(paths.json_path)
         assert payload == expected_payload(TEXT)
-        assert paths.txt_path.read_text(encoding="utf-8") == payload["text"]
+        assert paths.txt_path.read_text(encoding="utf-8") == "offline media contract"
         assert "stale" not in paths.json_path.read_text(encoding="utf-8")
         assert "stale" not in paths.txt_path.read_text(encoding="utf-8")
         assert staging_files(paths.json_path.parent) == []
