@@ -1,6 +1,10 @@
 .venv/
 dist/
 transcriptions/
+/*.m4a
+/*.mp3
+/*.mp4
+/*.wav
 __pycache__/
 *.egg-info/
 .pytest_cache/
