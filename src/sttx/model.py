@@ -19,6 +19,10 @@ from huggingface_hub.errors import (
     LocalEntryNotFoundError,
 )
 
+# Changing this model can change the encoder frame quantum that
+# sttx.asr.ENCODER_FRAME assumes. The check against the real binding lives in
+# tests/integration/test_binding_contract.py, which is integration-marked and
+# therefore skipped by CI, so verify it locally when swapping models.
 PARAKEET_REPO_ID: Final = (
     "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
 )

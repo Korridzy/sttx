@@ -30,6 +30,15 @@ MAX_CHUNK_SAMPLES: Final = 480_000
 CONTROL_TOKENS: Final = frozenset({"", "<blk>", "<blank>", "<s>", "</s>", "<unk>"})
 SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
+# Parakeet TDT reports token timings on the encoder frame grid (subsampling
+# factor 8 over a 10 ms feature hop), so the frame covering a chunk's final
+# samples may start and end past the chunk itself.
+ENCODER_FRAME: Final = 0.08
+# A loose sanity bound, not a tight one: legitimate overhang reaches ~0.4 s (one
+# frame plus the model's longest duration), and this leaves generous margin so
+# it only catches grossly corrupt durations. Do not tighten it towards 0.4
+# expecting it to validate durations; that is not what it is for.
+MAX_TOKEN_OVERHANG: Final = 1.0
 
 FloatSamples: TypeAlias = NDArray[np.float32]
 ProgressCallback: TypeAlias = Callable[[int, int], None]
@@ -287,25 +296,22 @@ def _word_events(
     if durations:
         if not all(math.isfinite(value) and value >= 0 for value in durations):
             raise TranscriptionError(reason="invalid token durations")
-        ends = tuple(
+        raw_ends = tuple(
             start + duration
             for start, duration in zip(timestamps, durations, strict=True)
         )
     else:
-        ends = (*timestamps[1:], chunk_duration)
-    if any(
-        end < start
-        or end > chunk_duration + TIMING_TOLERANCE
-        or not math.isfinite(end)
-        for start, end in zip(timestamps, ends, strict=True)
-    ):
-        raise TranscriptionError(reason="token end lies outside its chunk")
+        raw_ends = (*timestamps[1:], chunk_duration)
+    if any(end > chunk_duration + MAX_TOKEN_OVERHANG for end in raw_ends):
+        raise TranscriptionError(reason="token duration runs far past its chunk")
+    starts = tuple(min(start, chunk_duration) for start in timestamps)
+    ends = tuple(min(end, chunk_duration) for end in raw_ends)
 
     words: list[WordEvent] = []
     current_text = ""
     current_start = 0.0
     current_end = 0.0
-    for token, start, end in zip(tokens, timestamps, ends, strict=True):
+    for token, start, end in zip(tokens, starts, ends, strict=True):
         if token in CONTROL_TOKENS:
             continue
         boundary = token.startswith("▁") or token.startswith(" ")
@@ -343,7 +349,7 @@ def _word_events(
 def _valid_starts(timestamps: tuple[float, ...], chunk_duration: float) -> bool:
     return (
         all(
-            math.isfinite(value) and 0 <= value <= chunk_duration + TIMING_TOLERANCE
+            math.isfinite(value) and 0 <= value <= chunk_duration + ENCODER_FRAME
             for value in timestamps
         )
         and all(left <= right for left, right in zip(timestamps, timestamps[1:]))

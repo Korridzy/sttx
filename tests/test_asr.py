@@ -362,7 +362,8 @@ def test_control_only_result_is_empty(tmp_path: Path) -> None:
         FakeResult("Bad", (" Bad",), (-0.1,)),
         FakeResult("Bad timing", (" Bad", " timing"), (0.4, 0.2)),
         FakeResult("Bad", (" Bad",), (0.0,), durations=(-0.1,)),
-        FakeResult("Bad", (" Bad",), (0.9,), durations=(0.2,)),
+        FakeResult("Bad", (" Bad",), (1.081,), durations=(0.1,)),
+        FakeResult("Bad", (" Bad",), (0.0,), durations=(5.0,)),
         FakeResult("Mismatch", (" Mis", "match"), (0.0,)),
         FakeResult("Mismatch", (" Mismatch",), (0.0,), durations=(0.1, 0.2)),
     ],
@@ -378,3 +379,158 @@ def test_invalid_timing_is_transcription_error(
             segments=(_segment(0, 16_000),),
             results=(result,),
         )
+
+
+def test_frame_overhang_is_clamped_to_the_chunk(tmp_path: Path) -> None:
+    """Parakeet TDT times tokens on a 0.08 s frame grid, so the frame covering a
+    chunk's final samples ends past the chunk. Observed on a real recording at
+    audio position 02:20:22.054: a 27 232-sample chunk (1.702 s) whose last token
+    started at 1.68 s and ran one frame to 1.76 s.
+    """
+    overhanging = FakeResult(
+        text="s",
+        tokens=(" s",),
+        timestamps=(1.68,),
+        durations=(0.08,),
+    )
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=27_232,
+        segments=(_segment(0, 27_232),),
+        results=(overhanging,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 1.68, "end": 1.7, "text": "s"}
+    ]
+
+
+def test_start_past_the_chunk_is_clamped_not_inverted(tmp_path: Path) -> None:
+    """Defensive, not observed: the bundled model cannot produce this.
+
+    Frame-grid starts satisfy floor(chunk_duration / frame) * frame <=
+    chunk_duration for any subsampling factor, so a start beyond the chunk end
+    needs a padded encoder or a different model. This pins the clamp for that
+    case -- it is why _valid_starts carries one frame of headroom -- and must
+    not be read as evidence about how Parakeet behaves.
+    """
+    starts_past_the_chunk = FakeResult(
+        text="tail",
+        tokens=(" tail",),
+        timestamps=(1.04,),
+        durations=(0.08,),
+    )
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=16_000,
+        segments=(_segment(0, 16_000),),
+        results=(starts_past_the_chunk,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 1.0, "end": 1.0, "text": "tail"}
+    ]
+
+
+def test_zero_duration_token_keeps_its_text(tmp_path: Path) -> None:
+    """A zero-length span is correct output, not a defect to tidy away.
+
+    The model emits 0.00 durations natively, so dropping such a word to avoid
+    an empty span would delete transcript text -- a worse fault than the span.
+    """
+    zero_duration = FakeResult(
+        text="hi",
+        tokens=(" hi",),
+        timestamps=(0.5,),
+        durations=(0.0,),
+    )
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=16_000,
+        segments=(_segment(0, 16_000),),
+        results=(zero_duration,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 0.5, "end": 0.5, "text": "hi"}
+    ]
+
+
+def test_overhang_between_one_frame_and_the_overhang_bound_is_clamped(
+    tmp_path: Path,
+) -> None:
+    """The band between ENCODER_FRAME and MAX_TOKEN_OVERHANG must clamp, not
+    raise. This is what stops the two constants being collapsed into one.
+    """
+    overlong = FakeResult("wide", (" wide",), (0.0,), durations=(1.5,))
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=16_000,
+        segments=(_segment(0, 16_000),),
+        results=(overlong,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 0.0, "end": 1.0, "text": "wide"}
+    ]
+
+
+def test_overhang_without_durations_is_clamped(tmp_path: Path) -> None:
+    """With no durations the last end is chunk_duration, which sits BELOW a
+    final timestamp that reaches into the closing frame. Clamping both sides is
+    what keeps that from inverting.
+    """
+    no_durations = FakeResult("a b", (" a", " b"), (0.5, 1.05))
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=16_000,
+        segments=(_segment(0, 16_000),),
+        results=(no_durations,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 0.5, "end": 1.0, "text": "a b"}
+    ]
+
+
+def test_overhanging_chunk_stays_ordered_against_the_next_chunk(tmp_path: Path) -> None:
+    """The case that would move the failure from _word_events to
+    _append_monotonic: chunk one's last token runs a frame past its chunk, and
+    chunk two then starts at its own first frame.
+    """
+    overhanging = FakeResult("a", (" a",), (1.68,), durations=(0.08,))
+    follows = FakeResult("b", (" b",), (0.0,), durations=(0.08,))
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=27_232 + 16_000,
+        segments=(_segment(0, 27_232), _segment(27_232, 16_000)),
+        results=(overhanging, follows),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 1.68, "end": 1.78, "text": "a b"}
+    ]
+
+
+def test_longest_overhang_at_the_end_of_the_wav(tmp_path: Path) -> None:
+    """A full four-frame duration on the file's last token must not trip the
+    wav_duration cap in _append_monotonic.
+    """
+    overhanging = FakeResult("z", (" z",), (1.68,), durations=(0.32,))
+
+    _, _, payload = _run(
+        tmp_path,
+        sample_count=27_232,
+        segments=(_segment(0, 27_232),),
+        results=(overhanging,),
+    )
+
+    assert payload["segments"] == [
+        {"id": 0, "start": 1.68, "end": 1.7, "text": "z"}
+    ]
