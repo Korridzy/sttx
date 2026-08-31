@@ -63,6 +63,15 @@ SUCCESS: int = 0
 ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
+# Configured intent only: observed inert in this sherpa-onnx version, which
+# never split a run on it. Kept so the ceiling is declared rather than implied.
+VAD_MAX_SPEECH_SECONDS: int = 60
+# sherpa-onnx buffers a whole speech run before emitting it, and
+# max_speech_duration does not split one: a stretch without a min_silence pause
+# stays a single segment however long it runs. No capacity is therefore always
+# sufficient; this one covers the recordings measured so far, and anything
+# longer only costs a lossless resize notice on stderr.
+VAD_BUFFER_SECONDS: float = 240.0
 PROGRESS_BAR_WIDTH: int = 20
 LIVE_PROGRESS_TICK_SECONDS: float = 0.1
 LIVE_PROGRESS_RENDER_PREFIX: bytes = b"\x00sttx-live-progress-render\x00"
@@ -1053,7 +1062,7 @@ def _make_vad_from_bundle(
                 min_silence_duration=0.5,
                 min_speech_duration=0.25,
                 window_size=512,
-                max_speech_duration=60,
+                max_speech_duration=VAD_MAX_SPEECH_SECONDS,
             ),
             sample_rate=SAMPLE_RATE,
             num_threads=1,
@@ -1063,7 +1072,7 @@ def _make_vad_from_bundle(
         return _VoiceActivityDetectorAdapter(
             sherpa_onnx.VoiceActivityDetector(
                 config,
-                buffer_size_in_seconds=60.0,
+                buffer_size_in_seconds=VAD_BUFFER_SECONDS,
             )
         )
     except (OSError, RuntimeError, ValueError) as error:
