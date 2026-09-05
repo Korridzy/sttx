@@ -18,6 +18,7 @@ EXPECTED_SOURCES = {
     "sttx/asr.py",
     "sttx/asr_events.py",
     "sttx/audio.py",
+    "sttx/backend_contract.py",
     "sttx/cli.py",
     "sttx/model.py",
     "sttx/output.py",
