@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import multiprocessing
 import queue
@@ -28,6 +29,7 @@ from .backend_contract import (
     PARAKEET_REVISION as PARAKEET_REVISION,
     PARAKEET_FILENAMES as PARAKEET_FILENAMES,
     SILERO_FILENAME as SILERO_FILENAME,
+    SILERO_SHA256 as SILERO_SHA256,
     SILERO_URL as SILERO_URL,
 )
 DOWNLOAD_TIMEOUT_SECONDS: Final = 60.0
@@ -84,6 +86,7 @@ def resolve_bundle(
     _snapshot_download: SnapshotDownloader | None = None,
     _silero_cache_path: Path | None = None,
     _silero_downloader: SileroDownloader | None = None,
+    _silero_expected_sha256: str = SILERO_SHA256,
 ) -> ModelBundle:
     if model_dir is not None:
         return replace(
@@ -131,12 +134,10 @@ def resolve_bundle(
     silero_path = _silero_cache_path or (
         Path.home() / ".cache" / "sttx" / SILERO_FILENAME
     )
-    silero_source: ModelSource = (
-        "cache" if _is_readable_asset(silero_path) else "download"
-    )
-    silero = _resolve_silero(
+    silero, silero_source = _resolve_silero(
         silero_path,
         _silero_downloader or _download_silero,
+        _silero_expected_sha256,
     )
     source: ModelSource = (
         parakeet_source
@@ -273,12 +274,23 @@ def _is_readable_asset(path: Path) -> bool:
         return False
 
 
+def _silero_matches(path: Path, expected_sha256: str) -> bool:
+    if not _is_readable_asset(path):
+        return False
+    try:
+        with path.open("rb") as asset:
+            return hashlib.file_digest(asset, "sha256").hexdigest() == expected_sha256
+    except OSError:
+        return False
+
+
 def _resolve_silero(
     final_path: Path,
     downloader: SileroDownloader,
-) -> Path:
-    if _is_readable_asset(final_path):
-        return _require_asset(final_path)
+    expected_sha256: str,
+) -> tuple[Path, Literal["cache", "download"]]:
+    if _silero_matches(final_path, expected_sha256):
+        return final_path, "cache"
 
     try:
         final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,8 +313,13 @@ def _resolve_silero(
             staged_file.flush()
             os.fsync(staged_file.fileno())
         _require_asset(staging)
+        if not _silero_matches(staging, expected_sha256):
+            raise ModelEnvironmentError(
+                path=staging,
+                reason=f"Silero SHA-256 mismatch: expected {expected_sha256}",
+            )
         os.replace(staging, final_path)
-        return _require_asset(final_path)
+        return final_path, "download"
     except OSError as error:
         raise ModelEnvironmentError(
             path=final_path,
