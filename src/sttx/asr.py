@@ -23,22 +23,24 @@ from sttx.asr_events import (
     VadSegmentReady,
     WordCountUpdated,
 )
+from sttx.backend_contract import (
+    # Parakeet TDT reports token timings on the encoder frame grid (subsampling
+    # factor 8 over a 10 ms feature hop), so the frame covering a chunk's final
+    # samples may start and end past the chunk itself.
+    ENCODER_FRAME as ENCODER_FRAME,
+    # A loose sanity bound, not a tight one: legitimate overhang reaches ~0.4 s (one
+    # frame plus the model's longest duration), and this leaves generous margin so
+    # it only catches grossly corrupt durations. Do not tighten it towards 0.4
+    # expecting it to validate durations; that is not what it is for.
+    MAX_TOKEN_OVERHANG as MAX_TOKEN_OVERHANG,
+    MAX_CHUNK_SAMPLES as MAX_CHUNK_SAMPLES,
+    VAD_WINDOW_SAMPLES as VAD_WINDOW_SAMPLES,
+)
 from sttx.output import Segment, Transcript
 
-VAD_WINDOW_SAMPLES: Final = 512
-MAX_CHUNK_SAMPLES: Final = 480_000
 CONTROL_TOKENS: Final = frozenset({"", "<blk>", "<blank>", "<s>", "</s>", "<unk>"})
 SENTENCE_PUNCTUATION: Final = frozenset({".", "!", "?"})
 TIMING_TOLERANCE: Final = 1e-3
-# Parakeet TDT reports token timings on the encoder frame grid (subsampling
-# factor 8 over a 10 ms feature hop), so the frame covering a chunk's final
-# samples may start and end past the chunk itself.
-ENCODER_FRAME: Final = 0.08
-# A loose sanity bound, not a tight one: legitimate overhang reaches ~0.4 s (one
-# frame plus the model's longest duration), and this leaves generous margin so
-# it only catches grossly corrupt durations. Do not tighten it towards 0.4
-# expecting it to validate durations; that is not what it is for.
-MAX_TOKEN_OVERHANG: Final = 1.0
 
 FloatSamples: TypeAlias = NDArray[np.float32]
 ProgressCallback: TypeAlias = Callable[[int, int], None]

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
 from typing import Final, TypeAlias, get_type_hints
 
 import pytest
 
 import sttx.backend_contract as contract
+import sttx.cli as cli
+from sttx.model import ModelBundle
 
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 EXPECTED_PAYLOAD: Final[dict[str, JsonValue]] = {
@@ -142,3 +147,137 @@ def test_digest_format_when_synthetic_length_is_mutated_rejects() -> None:
         _assert_digest_format(payload["fixture_sha256"])
 
     assert contract.contract_payload()["fixture_sha256"] == original
+
+
+CapturedCalls: TypeAlias = dict[str, dict[str, str | int | float]]
+BUNDLE: Final = ModelBundle(
+    encoder=Path("/sentinel/encoder.onnx"), decoder=Path("/sentinel/decoder.onnx"),
+    joiner=Path("/sentinel/joiner.onnx"), tokens=Path("/sentinel/vocabulary.txt"),
+    silero=Path("/sentinel/vad.onnx"),
+)
+
+
+@pytest.fixture
+def constructors(monkeypatch: pytest.MonkeyPatch) -> CapturedCalls:
+    calls: CapturedCalls = {}
+
+    def recognizer(**kwargs: str | int | float) -> str:
+        calls["recognizer"] = kwargs
+        return "recognizer"
+
+    def silero(**kwargs: str | int | float) -> str:
+        calls["silero"] = kwargs
+        return "silero-config"
+
+    def model(**kwargs: str | int | float) -> str:
+        calls["model"] = kwargs
+        return "model-config"
+
+    def detector(config: str, **kwargs: str | int | float) -> str:
+        calls["detector"] = {"config": config, **kwargs}
+        return "detector"
+
+    monkeypatch.setattr(cli.sherpa_onnx.OfflineRecognizer, "from_transducer", recognizer)
+    monkeypatch.setattr(cli.sherpa_onnx, "SileroVadModelConfig", silero)
+    monkeypatch.setattr(cli.sherpa_onnx, "VadModelConfig", model)
+    monkeypatch.setattr(cli.sherpa_onnx, "VoiceActivityDetector", detector)
+    return calls
+
+
+def _assert_constructor_calls(
+    calls: CapturedCalls, settings: contract.ContractPayload, group: str | None = None,
+) -> None:
+    expected = {
+        "recognizer": {"encoder": str(BUNDLE.encoder), "decoder": str(BUNDLE.decoder),
+                       "joiner": str(BUNDLE.joiner), "tokens": str(BUNDLE.tokens),
+                       **settings["recognizer_settings"]},
+        "silero": {"model": str(BUNDLE.silero), **settings["vad_settings"]["silero"]},
+        "model": {"silero_vad": "silero-config", **settings["vad_settings"]["model"]},
+        "detector": {"config": "model-config", **settings["vad_settings"]["detector"]},
+    }
+    if group is None:
+        assert calls == expected
+    else:
+        assert calls[group] == expected[group]
+
+
+def test_constructor_kwargs_when_defaults_are_used(constructors: CapturedCalls) -> None:
+    expected = contract.contract_payload()
+
+    _ = cli._make_recognizer_from_bundle(BUNDLE)
+    _ = cli._make_vad_from_bundle(BUNDLE)
+
+    _assert_constructor_calls(constructors, expected)
+    assert cli.VAD_BUFFER_SECONDS == 240.0
+
+
+@pytest.mark.parametrize("scenario", [(live, group) for live in (False, True)
+                                     for group in ("recognizer", "silero", "model", "detector")])
+def test_constructor_kwargs_when_sentinels_are_supplied(
+    constructors: CapturedCalls, monkeypatch: pytest.MonkeyPatch, scenario: tuple[bool, str],
+) -> None:
+    live_defaults, group = scenario
+    expected = contract.contract_payload()
+    recognizer: contract.RecognizerSettings = {
+        "num_threads": 3, "sample_rate": 8000, "feature_dim": 40,
+        "decoding_method": "modified_beam_search", "provider": "cuda", "model_type": "zipformer",
+    }
+    vad: contract.VadSettings = {
+        "silero": {"threshold": 0.7, "min_silence_duration": 0.8,
+                   "min_speech_duration": 0.4, "window_size": 256, "max_speech_duration": 17.0},
+        "model": {"sample_rate": 8000, "num_threads": 2, "provider": "cuda", "debug": True},
+        "detector": {"buffer_size_in_seconds": 123.0},
+    }
+    expected["recognizer_settings"], expected["vad_settings"] = recognizer, vad
+    if live_defaults:
+        monkeypatch.setattr(contract, "RECOGNIZER_SETTINGS", recognizer)
+        monkeypatch.setattr(contract, "VAD_SETTINGS", vad)
+
+    if group == "recognizer":
+        if live_defaults:
+            _ = cli._make_recognizer_from_bundle(BUNDLE)
+        else:
+            _ = cli._make_recognizer_from_bundle(BUNDLE, settings=recognizer)
+    else:
+        if live_defaults:
+            _ = cli._make_vad_from_bundle(BUNDLE)
+        else:
+            _ = cli._make_vad_from_bundle(BUNDLE, settings=vad)
+
+    _assert_constructor_calls(constructors, expected, group)
+
+
+def test_production_consumption_when_contract_constants_change(tmp_path: Path) -> None:
+    driver = '''
+import sys
+from pathlib import Path
+import sttx.backend_contract as contract
+contract.VAD_WINDOW_SAMPLES = 256
+contract.MAX_CHUNK_SAMPLES = 16000
+contract.ENCODER_FRAME = 0.16
+contract.MAX_TOKEN_OVERHANG = 0.25
+import sttx.asr as asr
+from tests.test_asr import FakeResult, _run, _segment
+assert (asr.VAD_WINDOW_SAMPLES, asr.MAX_CHUNK_SAMPLES,
+        asr.ENCODER_FRAME, asr.MAX_TOKEN_OVERHANG) == (256, 16000, 0.16, 0.25)
+vad, recognizer, transcript = _run(
+    Path(sys.argv[1]), sample_count=32001, segments=(_segment(0, 32001),),
+    results=(FakeResult("", (), ()),) * 3)
+assert vad.fed_sizes == [256] * 125 + [1]
+assert recognizer.chunk_lengths == [16000, 16000, 1]
+assert asr._valid_starts((1.15,), 1.0)
+assert not asr._valid_starts((1.17,), 1.0)
+assert asr._word_events(FakeResult("word", ("word",), (0.0,), (1.24,)),
+                        offset=0.0, chunk_duration=1.0)[0].end == 1.0
+try:
+    asr._word_events(FakeResult("word", ("word",), (0.0,), (1.26,)),
+                     offset=0.0, chunk_duration=1.0)
+except asr.TranscriptionError:
+    pass
+else:
+    raise AssertionError("contract overhang bound was not consumed")
+'''
+
+    result = subprocess.run([sys.executable, "-c", driver, str(tmp_path)], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
