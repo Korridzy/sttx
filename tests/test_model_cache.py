@@ -39,6 +39,10 @@ def test_warm_hf_and_silero_caches_never_call_network(tmp_path: Path) -> None:
 
     # Then: each HF lookup is local-only and Silero is never downloaded.
     assert [call["local_files_only"] for call in calls] == [True, True]
+    assert [call["revision"] for call in calls] == [
+        "2bda32ec70b097a55adaa07d9a7173915b43cc78",
+        "2bda32ec70b097a55adaa07d9a7173915b43cc78",
+    ]
     assert silero_calls == []
     assert bundle_paths(first) == bundle_paths(second)
     assert first.source == "cache"
@@ -64,6 +68,26 @@ def test_hf_cache_env_is_passed_to_snapshot_downloader(
     )
 
     assert [call["cache_dir"] for call in calls] == [cache]
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_hub_adapter_receives_pin_when_resolving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warm: bool,
+) -> None:
+    from sttx import model
+
+    snapshot = tmp_path / "snapshot"
+    write_files(snapshot, PARAKEET_NAMES)
+    downloader, calls = snapshot_fake(snapshot if warm else tmp_path / "absent", snapshot)
+    monkeypatch.setattr(model, "snapshot_download", downloader)
+
+    model.resolve_bundle(
+        _silero_cache_path=tmp_path / "silero_vad.onnx",
+        _silero_downloader=silero_writer(b"vad", []),
+    )
+
+    assert [call["local_files_only"] for call in calls] == ([True] if warm else [True, False])
+    assert all(call["revision"] == "2bda32ec70b097a55adaa07d9a7173915b43cc78" for call in calls)
 
 
 def test_absent_components_are_acquired_once(tmp_path: Path) -> None:
@@ -93,6 +117,7 @@ def test_absent_components_are_acquired_once(tmp_path: Path) -> None:
     # Then: cold components acquire once and warm components stay local.
     assert [call["local_files_only"] for call in calls] == [True, False]
     assert [call["local_files_only"] for call in warm_calls] == [True]
+    assert all(call["revision"] == "2bda32ec70b097a55adaa07d9a7173915b43cc78" for call in calls + warm_calls)
     assert len(silero_calls) == 1
     assert first.silero.read_bytes() == b"downloaded-silero"
     assert bundle_paths(first) == bundle_paths(second)

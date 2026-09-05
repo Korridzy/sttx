@@ -1,8 +1,10 @@
 # noqa: SIZE_OK — Todo 10 is one external integration gate with split helpers
 from __future__ import annotations
 
+import json
 import shutil
 import wave
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from huggingface_hub import hf_hub_download
 
 from .real_pipeline_artifacts import (
     JsonValue,
+    TaskArtifacts,
     append_log,
     bundle_identity,
     copy_bundle,
@@ -38,25 +41,66 @@ from .real_pipeline_media import (
 )
 from .real_pipeline_evidence_contract import assert_todo10_contract
 from .real_pipeline_observability import write_vad_positive_continuous_wav
-from .real_pipeline_runner import STTX_BIN, run_sttx, sanitized_env
+from .real_pipeline_runner import STTX_BIN, CacheEnv, run_sttx, sanitized_env
 from .real_pipeline_signals import prove_signal_barriers
 
 
 @pytest.mark.integration
-def test_real_floating_pipeline_gate(
+def test_real_pinned_pipeline_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     identity_output: Path | None,
 ) -> None:
     artifacts = task_artifacts(identity_output, tmp_path)
-    append_log(artifacts.log, "WORKING: Todo 10 real pipeline - cold acquisition")
-    cold = sanitized_env(tmp_path / "cold")
-    _apply_env(monkeypatch, cold.values)
-    from sttx.model import PARAKEET_REPO_ID, SILERO_URL, resolve_bundle
+    evidence: dict[str, JsonValue] = {
+        "gate": {"verdict": "started", "assertion": None},
+        "commands": {},
+        "checks": {},
+        "cleanup": {
+            "qa_wav_cache": str(tmp_path / "qa-wav-cache"),
+            "qa_en_wav": None,
+        },
+        "adversarial_classes": _adversarial_skeleton(),
+    }
+    try:
+        _write_evidence(artifacts.identity, evidence)
+        _ = artifacts.log.write_text("", encoding="utf-8")
+        artifacts.done_claim.unlink(missing_ok=True)
+        artifacts.hash_manifest.unlink(missing_ok=True)
+        _write_evidence(artifacts.cleanup, json_mapping(evidence["cleanup"], "cleanup"))
+        append_log(artifacts.log, "WORKING: Todo 10 real pipeline - cold acquisition")
+        cold = sanitized_env(tmp_path / "cold")
+        _apply_env(monkeypatch, cold.values)
+        _run_pipeline(cold, artifacts, evidence)
+    except BaseException as error:
+        _finalize_failure(artifacts, evidence, error)
+        raise
 
+
+def _run_pipeline(
+    cold: CacheEnv,
+    artifacts: TaskArtifacts,
+    evidence: dict[str, JsonValue],
+) -> None:
+    tmp_path = cold.root.parent
+    wav_cache = tmp_path / "qa-wav-cache"
+    from sttx.model import PARAKEET_REPO_ID, PARAKEET_REVISION, SILERO_URL, resolve_bundle
+
+    evidence.update({
+        "venv": ".venv",
+        "sttx_bin": str(STTX_BIN),
+        "cold_env": cold.json(),
+        "environment": environment_identity(),
+    })
     bundle = resolve_bundle()
     commit = snapshot_commit(bundle)
-    wav_cache = tmp_path / "qa-wav-cache"
+    evidence["model"] = {
+        "repo_id": PARAKEET_REPO_ID,
+        "silero_official_url": SILERO_URL,
+        "commit": commit,
+        "assets": bundle_identity(bundle),
+    }
+    assert commit == PARAKEET_REVISION, (commit, PARAKEET_REVISION)
     en_wav = Path(
         hf_hub_download(
             repo_id=PARAKEET_REPO_ID,
@@ -65,35 +109,21 @@ def test_real_floating_pipeline_gate(
             cache_dir=wav_cache,
         )
     )
-    evidence: dict[str, JsonValue] = {
-        "gate": "Todo 10 real floating-model pipeline",
-        "venv": ".venv",
-        "sttx_bin": str(STTX_BIN),
-        "cold_env": cold.json(),
-        "environment": environment_identity(),
-        "model": {
-            "repo_id": PARAKEET_REPO_ID,
-            "silero_official_url": SILERO_URL,
-            "commit": commit,
-            "assets": bundle_identity(bundle),
-        },
-        "qa_wav": {
-            "runtime_asset": False,
-            "repo_id": PARAKEET_REPO_ID,
-            "commit": commit,
-            "sample_rate": _sample_rate(en_wav),
-            "path": str(en_wav),
-            "size": en_wav.stat().st_size,
-            "sha256": sha256(en_wav),
-        },
-        "commands": {},
-        "checks": {},
-        "adversarial_classes": _adversarial_skeleton(),
+    evidence["cleanup"] = {"qa_wav_cache": str(wav_cache), "qa_en_wav": str(en_wav)}
+    evidence["qa_wav"] = {
+        "runtime_asset": False,
+        "repo_id": PARAKEET_REPO_ID,
+        "commit": commit,
+        "sample_rate": _sample_rate(en_wav),
+        "path": str(en_wav),
+        "size": en_wav.stat().st_size,
+        "sha256": sha256(en_wav),
     }
 
     media_dir = tmp_path / "media"
     media_dir.mkdir()
     format_results: dict[str, JsonValue] = {}
+    evidence["commands"] = {"direct_cli": format_results}
     append_log(artifacts.log, "WORKING: Todo 10 real pipeline - direct CLI media")
     for suffix in (".wav", ".mp3", ".ogg", ".mp4"):
         media = convert_media(en_wav, media_dir / f"sample{suffix}")
@@ -133,6 +163,8 @@ def test_real_floating_pipeline_gate(
 
     shutil.rmtree(wav_cache, ignore_errors=True)
     cleanup: dict[str, JsonValue] = {
+        "qa_wav_cache": str(wav_cache),
+        "qa_en_wav": str(en_wav),
         "qa_wav_cache_removed": not wav_cache.exists(),
         "qa_en_wav_deleted": not en_wav.exists(),
         "live_process_probe": {
@@ -148,10 +180,11 @@ def test_real_floating_pipeline_gate(
     }
     evidence["cleanup"] = cleanup
     assert_todo10_contract(evidence)
-    write_json(artifacts.cleanup, cleanup)
-    write_json(artifacts.identity, evidence)
+    evidence["gate"] = {"verdict": "pass", "assertion": "all"}
+    _write_evidence(artifacts.cleanup, cleanup)
+    _write_evidence(artifacts.identity, evidence)
     write_hash_manifest(artifacts)
-    write_json(
+    _write_evidence(
         artifacts.done_claim,
         {
             "status": "UNCOMMITTED",
@@ -166,6 +199,56 @@ def test_real_floating_pipeline_gate(
             "cleanup": str(artifacts.cleanup),
         },
     )
+
+
+def _write_evidence(path: Path, payload: Mapping[str, JsonValue]) -> None:
+    try:
+        write_json(path, payload)
+    except BaseException as error:
+        try:
+            path.with_name(f".{path.name}.tmp").unlink(missing_ok=True)
+        except BaseException as secondary:
+            error.add_note(f"staging cleanup failed: {type(secondary).__name__}: {secondary}")
+        raise
+
+
+def _finalize_failure(
+    artifacts: TaskArtifacts,
+    evidence: dict[str, JsonValue],
+    error: BaseException,
+) -> None:
+    failure = {"type": type(error).__name__, "message": str(error)}
+    evidence["gate"] = {
+        "verdict": "fail", "assertion": f"{type(error).__name__}: {error}",
+    }
+    evidence["failure"] = failure
+    for path in (artifacts.hash_manifest, artifacts.done_claim):
+        try:
+            path.with_name(f".{path.name}.tmp").unlink(missing_ok=True)
+        except BaseException as secondary:
+            error.add_note(f"staging cleanup failed: {type(secondary).__name__}: {secondary}")
+    cleanup = dict(json_mapping(evidence.get("cleanup", {}), "cleanup"))
+    cache = cleanup.get("qa_wav_cache")
+    if isinstance(cache, str):
+        try:
+            shutil.rmtree(cache, ignore_errors=True)
+        except BaseException as secondary:
+            error.add_note(f"audio cleanup failed: {type(secondary).__name__}: {secondary}")
+        cleanup["qa_wav_cache_removed"] = not Path(cache).exists()
+        audio = cleanup.get("qa_en_wav")
+        cleanup["qa_en_wav_deleted"] = (
+            not Path(audio).exists() if isinstance(audio, str) else not Path(cache).exists()
+        )
+    evidence["cleanup"] = cleanup
+    try:
+        append_log(artifacts.log, "FAILED: " + json.dumps(failure, ensure_ascii=True))
+    except BaseException as secondary:
+        error.add_note(f"failure log failed: {type(secondary).__name__}: {secondary}")
+    for path, payload in ((artifacts.cleanup, cleanup), (artifacts.identity, evidence)):
+        try:
+            _write_evidence(path, payload)
+        except BaseException as secondary:
+            error.add_note(f"evidence write failed: {type(secondary).__name__}: {secondary}")
 
 
 def _apply_env(monkeypatch: pytest.MonkeyPatch, values: dict[str, str]) -> None:

@@ -23,19 +23,12 @@ from huggingface_hub.errors import (
 # sttx.asr.ENCODER_FRAME assumes. The check against the real binding lives in
 # tests/integration/test_binding_contract.py, which is integration-marked and
 # therefore skipped by CI, so verify it locally when swapping models.
-PARAKEET_REPO_ID: Final = (
-    "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
-)
-PARAKEET_FILENAMES: Final = (
-    "encoder.int8.onnx",
-    "decoder.int8.onnx",
-    "joiner.int8.onnx",
-    "tokens.txt",
-)
-SILERO_FILENAME: Final = "silero_vad.onnx"
-SILERO_URL: Final = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-    "silero_vad.onnx"
+from .backend_contract import (
+    PARAKEET_REPO_ID as PARAKEET_REPO_ID,
+    PARAKEET_REVISION as PARAKEET_REVISION,
+    PARAKEET_FILENAMES as PARAKEET_FILENAMES,
+    SILERO_FILENAME as SILERO_FILENAME,
+    SILERO_URL as SILERO_URL,
 )
 DOWNLOAD_TIMEOUT_SECONDS: Final = 60.0
 
@@ -45,6 +38,7 @@ class SnapshotDownloader(Protocol):
         self,
         *,
         repo_id: str,
+        revision: str,
         allow_patterns: list[str],
         local_files_only: bool,
         cache_dir: Path | None,
@@ -103,6 +97,7 @@ def resolve_bundle(
         local_snapshot = Path(
             download_snapshot(
                 repo_id=PARAKEET_REPO_ID,
+                revision=PARAKEET_REVISION,
                 allow_patterns=list(PARAKEET_FILENAMES),
                 local_files_only=True,
                 cache_dir=cache_dir,
@@ -119,6 +114,7 @@ def resolve_bundle(
             online_snapshot = Path(
                 download_snapshot(
                     repo_id=PARAKEET_REPO_ID,
+                    revision=PARAKEET_REVISION,
                     allow_patterns=list(PARAKEET_FILENAMES),
                     local_files_only=False,
                     cache_dir=cache_dir,
@@ -217,12 +213,14 @@ def _bundle_from_message(message: BundleMessage) -> ModelBundle:
 def _download_snapshot(
     *,
     repo_id: str,
+    revision: str,
     allow_patterns: list[str],
     local_files_only: bool,
     cache_dir: Path | None,
 ) -> str:
     result = snapshot_download(
         repo_id=repo_id,
+        revision=revision,
         allow_patterns=allow_patterns,
         local_files_only=local_files_only,
         cache_dir=cache_dir,

@@ -126,12 +126,14 @@ os.kill(os.getpid(), signal.SIGTERM)
     def interrupted_snapshot(
         *,
         repo_id: str,
+        revision: str,
         allow_patterns: list[str],
         local_files_only: bool,
         cache_dir: Path | None = None,
     ) -> str:
         assert cache_dir is None
         assert repo_id == REPO_ID
+        assert revision == "2bda32ec70b097a55adaa07d9a7173915b43cc78"
         assert tuple(allow_patterns) == PARAKEET_NAMES
         online_calls.append(local_files_only)
         if local_files_only:
@@ -217,8 +219,8 @@ print(json.dumps(paths, sort_keys=True))
     assert not external.exists()
 
 
-def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
-    # Given: an incomplete local cache and valid online floating result.
+def test_exact_revision_when_local_resolution_falls_back_online(tmp_path: Path) -> None:
+    # Given: an incomplete local cache and valid online result.
     model = model_module()
     local = tmp_path / "local"
     online = tmp_path / "online"
@@ -231,7 +233,7 @@ def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
         calls.append(kwargs)
         return str(local if kwargs["local_files_only"] else online)
 
-    # When: floating resolution falls back online.
+    # When: resolution falls back online.
     model.resolve_bundle(
         _snapshot_download=snapshot_download,
         _silero_cache_path=silero,
@@ -241,18 +243,23 @@ def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
     assert calls == [
         {
             "repo_id": REPO_ID,
+            "revision": "2bda32ec70b097a55adaa07d9a7173915b43cc78",
             "allow_patterns": list(PARAKEET_NAMES),
             "local_files_only": True,
             "cache_dir": None,
         },
         {
             "repo_id": REPO_ID,
+            "revision": "2bda32ec70b097a55adaa07d9a7173915b43cc78",
             "allow_patterns": list(PARAKEET_NAMES),
             "local_files_only": False,
             "cache_dir": None,
         },
     ]
+
+
+def test_no_checksum_pin_exists() -> None:
+    model = model_module()
     source = inspect.getsource(model)
-    assert "revision=" not in source
     assert "sha256" not in source.lower()
     assert model.SILERO_URL == SILERO_RELEASE_URL

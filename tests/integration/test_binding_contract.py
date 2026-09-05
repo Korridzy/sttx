@@ -21,6 +21,7 @@ import sherpa_onnx
 from huggingface_hub import hf_hub_download
 
 from sttx.audio import PreparedAudio, normalize_media
+from sttx.backend_contract import PARAKEET_REVISION
 from sttx.model import PARAKEET_REPO_ID, SILERO_URL, ModelBundle, resolve_bundle
 
 SAMPLE_RATE = 16_000
@@ -317,7 +318,7 @@ def _bundle_identity(bundle: ModelBundle, commit: str) -> dict[str, JsonValue]:
         "hugging_face": {
             "repo_id": PARAKEET_REPO_ID,
             "resolved_snapshot_commit": commit,
-            "runtime_revision_pinned": False,
+            "runtime_revision_pinned": True,
         },
         "runtime_assets": {
             name: _asset_identity(path) for name, path in paths.items()
@@ -352,6 +353,7 @@ def test_current_binding_and_model_contract(
     try:
         bundle = resolve_bundle()
         commit = _snapshot_commit(bundle)
+        assert commit == PARAKEET_REVISION, (commit, PARAKEET_REVISION)
         evidence.update(_bundle_identity(bundle, commit))
         wav = Path(
             hf_hub_download(

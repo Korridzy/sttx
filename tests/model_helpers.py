@@ -48,6 +48,7 @@ def snapshot_fake(
     def download(
         *,
         repo_id: str,
+        revision: str,
         allow_patterns: list[str],
         local_files_only: bool,
         cache_dir: Path | None = None,
@@ -55,6 +56,7 @@ def snapshot_fake(
         calls.append(
             {
                 "repo_id": repo_id,
+                "revision": revision,
                 "allow_patterns": tuple(allow_patterns),
                 "local_files_only": local_files_only,
                 "cache_dir": cache_dir,

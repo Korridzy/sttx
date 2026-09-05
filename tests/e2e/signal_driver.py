@@ -19,6 +19,7 @@ from sttx.asr_events import ActivityCallback
 from sttx.cli import RunnerDependencies, run
 from sttx.model import (
     PARAKEET_FILENAMES,
+    PARAKEET_REVISION,
     ModelBundle,
     ModelEnvironmentError,
     _bundle_from_directory,
@@ -111,11 +112,13 @@ def _resolve_for_phase(phase: str, root: Path, ready: Path) -> ModelBundle:
         def snapshot_download(
             *,
             repo_id: str,
+            revision: str,
             allow_patterns: list[str],
             local_files_only: bool,
             cache_dir: Path | None,
         ) -> str:
             assert cache_dir is None or cache_dir.is_absolute()
+            assert revision == PARAKEET_REVISION
             del repo_id, allow_patterns
             if local_files_only:
                 return str(root / "missing-snapshot")

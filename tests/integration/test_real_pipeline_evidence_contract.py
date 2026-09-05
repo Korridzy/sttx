@@ -1,14 +1,136 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+from collections.abc import Mapping
 
 import pytest
 
-from .real_pipeline_artifacts import JsonValue
+from .real_pipeline_artifacts import JsonValue, json_mapping
 from .real_pipeline_evidence_contract import (
     EvidenceContractError,
     assert_todo10_contract,
 )
+
+
+@pytest.mark.parametrize("after_audio", [False, True])
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_failed_pipeline_lifecycle_preserves_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_audio: bool,
+    exception_type: type[BaseException],
+) -> None:
+    from sttx import model
+    from sttx.backend_contract import PARAKEET_REVISION
+    from ..model_helpers import ALL_NAMES, write_files
+    from . import test_real_pipeline as pipeline
+
+    failure = exception_type("injected lifecycle failure")
+    identity = tmp_path / "evidence" / "pipeline.json"
+    identity.parent.mkdir()
+    _ = identity.write_text('{"gate":{"verdict":"pass","assertion":"stale"}}')
+    _ = (identity.parent / "task-10-sttx-python-transcriber.log").write_text("FAILED: stale\n")
+    _ = (identity.parent / "task-10-done-claim.json").write_text('{"status":"stale pass"}')
+    audio = tmp_path / "qa-wav-cache" / "en.wav"
+    snapshot = tmp_path / "snapshots" / PARAKEET_REVISION
+    write_files(snapshot, ALL_NAMES)
+    bundle = model.resolve_bundle(snapshot)
+
+    def acquire() -> model.ModelBundle:
+        started = _read_evidence(identity)
+        assert started["gate"] == {"verdict": "started", "assertion": None}
+        if not after_audio:
+            raise failure
+        return bundle
+
+    def acquire_audio(**_kwargs: JsonValue) -> str:
+        audio.parent.mkdir()
+        _ = audio.write_bytes(b"owned audio")
+        return str(audio)
+
+    def fail_sample_rate(_path: Path) -> int:
+        raise failure
+
+    monkeypatch.setattr(model, "resolve_bundle", acquire)
+    monkeypatch.setattr(pipeline, "hf_hub_download", acquire_audio)
+    monkeypatch.setattr(pipeline, "environment_identity", lambda: {"probe": "offline"})
+    monkeypatch.setattr(pipeline, "_sample_rate", fail_sample_rate)
+
+    with pytest.raises(exception_type) as captured:
+        pipeline.test_real_pinned_pipeline_gate(tmp_path, monkeypatch, identity)
+
+    assert captured.value is failure
+    evidence = _read_evidence(identity)
+    assert evidence["gate"] == {
+        "verdict": "fail",
+        "assertion": f"{exception_type.__name__}: injected lifecycle failure",
+    }
+    assert evidence["failure"] == {
+        "type": exception_type.__name__, "message": "injected lifecycle failure",
+    }
+    assert evidence["environment"] == {"probe": "offline"}
+    assert evidence["commands"] == {}
+    if after_audio:
+        assert json_mapping(evidence["model"], "model")["commit"] == PARAKEET_REVISION
+    cleanup = _read_evidence(identity.parent / "task-10-cleanup-receipt.json")
+    assert cleanup == evidence["cleanup"]
+    assert cleanup["qa_wav_cache_removed"] is True
+    assert cleanup["qa_en_wav_deleted"] is True
+    assert not audio.exists()
+    assert not audio.parent.exists()
+    lines = (identity.parent / "task-10-sttx-python-transcriber.log").read_text().splitlines()
+    assert sum("FAILED:" in line for line in lines) == 1
+    assert not list(identity.parent.glob("*.tmp"))
+    assert not (identity.parent / "task-10-done-claim.json").exists()
+
+
+@pytest.mark.parametrize("target", ["pipeline.json", "task-10-cleanup-receipt.json"])
+@pytest.mark.parametrize("secondary_type", [OSError, KeyboardInterrupt])
+def test_pipeline_writer_failure_preserves_original_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    secondary_type: type[BaseException],
+) -> None:
+    from sttx import model
+    from . import test_real_pipeline as pipeline
+
+    failure = RuntimeError("original acquisition error")
+    identity = tmp_path / "evidence" / "pipeline.json"
+    replace = os.replace
+
+    def broken_replace(source: Path, destination: Path) -> None:
+        if destination.name == target:
+            raise secondary_type("secondary writer error")
+        replace(source, destination)
+
+    def acquire() -> model.ModelBundle:
+        monkeypatch.setattr(os, "replace", broken_replace)
+        raise failure
+
+    monkeypatch.setattr(model, "resolve_bundle", acquire)
+    monkeypatch.setattr(pipeline, "environment_identity", lambda: {"probe": "offline"})
+    with pytest.raises(RuntimeError) as captured:
+        pipeline.test_real_pinned_pipeline_gate(tmp_path, monkeypatch, identity)
+
+    assert captured.value is failure
+    assert any("secondary writer error" in note for note in failure.__notes__)
+    assert not list(identity.parent.glob("*.tmp"))
+    evidence = _read_evidence(identity)
+    if target == "pipeline.json":
+        assert json_mapping(evidence["gate"], "gate")["verdict"] == "started"
+        receipt = _read_evidence(identity.parent / "task-10-cleanup-receipt.json")
+        assert receipt["qa_wav_cache_removed"] is True
+    else:
+        assert json_mapping(evidence["gate"], "gate")["verdict"] == "fail"
+        assert json_mapping(evidence["failure"], "failure")["message"] == "original acquisition error"
+
+
+def _read_evidence(path: Path) -> Mapping[str, JsonValue]:
+    payload: JsonValue = json.loads(path.read_text())
+    return json_mapping(payload, "evidence")
 
 def test_current_false_positive_evidence_is_rejected_when_present(tmp_path: Path) -> None:
     payload = _valid_evidence(tmp_path)
