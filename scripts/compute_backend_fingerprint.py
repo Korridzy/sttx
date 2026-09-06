@@ -1,8 +1,8 @@
 """Read-only qualification identity. Print permits an absent future gate only.
 
 Run with Python 3.11+ (including -I -S); no installed distribution is required.
-Release checks require all six sources. Only this checkout's trusted contract
-and pure lattice helper are executed; historical/base modules are never loaded.
+Qualification checks require all twelve sources. Only trusted pure helpers and
+the contract are executed; historical/base modules are never loaded.
 """
 from __future__ import annotations
 
@@ -24,19 +24,25 @@ from typing import TYPE_CHECKING, Final, assert_never
 if TYPE_CHECKING:
     from sttx.backend_contract import ContractPayload
     from tests.integration import timing_lattice as lattice
-    from tests.integration.timing_lattice import JsonValue, RawObservation, SignedPayload
+    from tests.integration import qualification_schema as schema
+    from tests.integration import qualification_validation as validation
+    from tests.integration.timing_lattice import JsonValue, SignedPayload
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 SOURCES: Final = ("scripts/compute_backend_fingerprint.py", "tests/integration/timing_lattice.py",
     "tests/integration/test_timing_qualification.py", "tests/conftest.py",
-    "src/sttx/asr.py", "src/sttx/cli.py")
+    "src/sttx/asr.py", "src/sttx/cli.py",
+    "tests/integration/qualification_schema.py", "tests/integration/qualification_validation.py",
+    "tests/integration/qualification_evaluation.py", "tests/integration/qualification_recording.py",
+    "tests/integration/qualification_probes.py", "scripts/backend_change_detector.py")
 
 
-def _load(path: Path) -> ModuleType:
+def _load(path: Path, **bindings: ModuleType) -> ModuleType:
     spec = importlib.util.spec_from_file_location("_sttx_qualification_" + path.stem, path)
     if spec is None:
         raise ImportError(str(path))
     module = importlib.util.module_from_spec(spec)
+    module.__dict__.update(bindings)
     previous = sys.modules.get(spec.name)
     sys.modules[spec.name] = module
     try:
@@ -81,15 +87,13 @@ def fingerprint(root: Path = ROOT, *, require_sources: bool = False) -> str:
 
 if not TYPE_CHECKING:
     lattice = _load(ROOT / "tests/integration/timing_lattice.py")
+    schema = _load(ROOT / "tests/integration/qualification_schema.py", lattice=lattice)
+    validation = _load(ROOT / "tests/integration/qualification_validation.py", lattice=lattice, schema=schema)
 
-STALE: Final = frozenset("baseline." + name + "_stale" for name in (
-    "fingerprint", "probe_version", "model_repo", "model_revision", "model_assets", "dependencies", "quantum"))
-BEHAVIOR: Final = frozenset({"behavior.length", "behavior.identity", "behavior.timing"})
-COLLECTIONS: Final = frozenset({"runs", "production_runs", "production_transcripts"})
-RECORD_KEYS: Final = COLLECTIONS | {
-    "record_kind", "schema_version", "fingerprint", "probe_version", "model", "dependencies", "fixture",
-    "platform", "derived_quantum_us", "inconclusive_reason", "observed_max_overhang_us",
-    "signature_sha256", "baseline_comparison"}
+STALE: Final = schema.STALE
+BEHAVIOR: Final = schema.BEHAVIOR
+COLLECTIONS: Final = schema.COLLECTIONS
+RECORD_KEYS: Final = schema.RECORD_KEYS
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -159,61 +163,18 @@ class Record:
 
 def load_record(path: Path, root: Path = ROOT, *, baseline: bool = False) -> Record:
     """Parse a complete promotable record; never trust its supplied diagnostics."""
-    decoded: JsonValue = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=lattice._unique_pairs)
-    data = lattice._shape(decoded, RECORD_KEYS | ({"promotion"} if baseline else set()))
-    _require(data["record_kind"] == ("qualified_backend" if baseline else "qualification_candidate"),
-             "incorrect record kind")
-    contract = contract_payload(root)
-    expected = {
-        "model": {"repo": contract["parakeet_repo_id"], "revision": contract["parakeet_revision"],
-                  "sha256": {**contract["parakeet_sha256"], contract["silero_filename"]: contract["silero_sha256"]}},
-        "fixture": {"repo": contract["fixture_repo_id"], "revision": contract["fixture_revision"],
-                    "name": contract["fixture_filename"], "sha256": contract["fixture_sha256"]},
-        "dependencies": dict(item.split("==") for item in dependencies(root)),
-        "platform": {"system": platform.system(), "machine": platform.machine()},
-    }
-    _require(platform.system() == "Linux", "unsupported qualification platform")
-    for name, identity in expected.items():
-        _require(data[name] == identity, f"candidate {name} differs from current contract")
-    _require(lattice._integer(data["schema_version"]) == 1, "unsupported schema version")
-    _require(lattice._integer(data["probe_version"]) == contract["probe_version"], "candidate probe version")
-    payload = lattice.load_payload(json.dumps({name: data[name] for name in COLLECTIONS}))
-    signature = lattice.signature_sha256(payload)
-    _require(_digest(data["signature_sha256"]) == signature, "signed payload mismatch")
-    quantum = lattice.derive_quantum_us([time for run in payload["runs"] for time in run["timestamps_us"]])
-    _require(lattice._integer(data["derived_quantum_us"]) == quantum == contract["encoder_frame_us"]
-             and data["inconclusive_reason"] is None, "invalid or inconclusive candidate quantum")
-    transcripts = payload["production_transcripts"]
-    _require([item["probe"] for item in transcripts] == ["original", "long"], "missing production probes")
-    _require(transcripts[1]["duration_us"] == 36_000_000, "long probe must contain 576000 samples")
-    _require(all(item["text"].strip() and item["segments"] for item in transcripts), "missing fixture speech")
-    _require(all(item["text"] == " ".join(" ".join(segment["text"].split())
-                 for segment in item["segments"] if segment["text"].strip()) for item in transcripts),
-             "transcript text differs from normalized segments")
-    _require(any(run["probe"] == "long" and run["chunk_index"] == 1 for run in payload["production_runs"]),
-             "missing long multichunk coverage")
-    overhang = 0
-    try:
-        observations: list[tuple[RawObservation, float]] = [
-                        (run, transcripts[0]["duration_us"] + run["variant"] * 1_000_000 / 16_000)
-                        for run in payload["runs"]]
-        observations.extend((run, run["sample_count"] * 1_000_000 / 16_000) for run in payload["production_runs"])
-        for run, duration in observations:
-            _require(bool(run["tokens"]) and bool(run["text"].strip()), "missing raw speech coverage")
-            ends = [start + (run["durations_us"][index] if run["durations_us"] else 0)
-                    for index, start in enumerate(run["timestamps_us"])]
-            overhang = max(overhang, lattice.quantize_us(max(0, max(ends) - duration) / 1_000_000))
-    except OverflowError as error:
-        raise lattice.ObservationError("observation arithmetic exceeds supported numeric magnitude") from error
-    _require(lattice._integer(data["observed_max_overhang_us"]) == overhang <= contract["max_token_overhang_us"],
-             "candidate overhang mismatch or excess")
-    comparison = load_comparison(data["baseline_comparison"])
+    parsed = validation.read_record(path, baseline=baseline)
+    data = parsed.observations
+    diagnostics = validation.validate_candidate(data, expectations(root), check_fingerprint=False)
+    _require(not diagnostics, "; ".join(item["message"] for item in diagnostics))
+    payload = schema.signed_payload(data)
+    signature = data["signature_sha256"]
+    comparison = load_comparison(schema.json_value(parsed.comparison))
     if baseline:
-        promotion = lattice._shape(data["promotion"], frozenset({
-            "previous_fingerprint", "previous_anchor", "comparison_to_previous", "decision"}))
-        _ = load_comparison(promotion["comparison_to_previous"])
-        _require(promotion["comparison_to_previous"] == data["baseline_comparison"], "provenance comparison mismatch")
-        decision = Decision(lattice._string(promotion["decision"]))
+        promotion = parsed.promotion
+        assert promotion is not None
+        _ = load_comparison(schema.json_value(promotion["comparison_to_previous"]))
+        decision = Decision(promotion["decision"])
         _policy(comparison, decision)
         match decision:
             case Decision.BOOTSTRAP:
@@ -226,6 +187,19 @@ def load_record(path: Path, root: Path = ROOT, *, baseline: bool = False) -> Rec
             case unreachable:
                 assert_never(unreachable)
     return Record(_digest(data["fingerprint"]), signature, payload, comparison)
+
+
+def expectations(root: Path = ROOT) -> schema.Expectations:
+    contract = contract_payload(root)
+    return schema.Expectations(
+        model={"repo": contract["parakeet_repo_id"], "revision": contract["parakeet_revision"],
+               "sha256": {**contract["parakeet_sha256"], contract["silero_filename"]: contract["silero_sha256"]}},
+        fixture={"repo": contract["fixture_repo_id"], "revision": contract["fixture_revision"],
+                 "name": contract["fixture_filename"], "sha256": contract["fixture_sha256"]},
+        dependencies=dict(item.split("==") for item in dependencies(root)),
+        platform={"system": platform.system(), "machine": platform.machine()},
+        probe_version=contract["probe_version"], quantum_us=contract["encoder_frame_us"],
+        max_overhang_us=contract["max_token_overhang_us"], fingerprint=fingerprint(root))
 
 
 def check_current(record: Record, root: Path = ROOT) -> None:

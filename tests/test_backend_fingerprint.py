@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_backend_promotion import ROOT, SCRIPT, SOURCES, checkout, invoke
+from tests.backend_qualification_helpers import ROOT, SCRIPT, SOURCES, checkout, invoke
 
 
 def test_print_when_isolated_uses_only_stdlib() -> None:
@@ -20,7 +20,7 @@ def test_print_when_isolated_uses_only_stdlib() -> None:
     assert result.stderr == ""
 
 
-@pytest.mark.parametrize("source", [name for name in SOURCES if name != SOURCES[2]])
+@pytest.mark.parametrize("source", SOURCES)
 def test_fingerprint_when_existing_source_changes(tmp_path: Path, source: str) -> None:
     root = checkout(tmp_path)
     before = invoke(root)
@@ -133,7 +133,7 @@ def test_cli_when_arguments_are_unsafe_rejects(flags: tuple[str, ...]) -> None:
     "comparison.fixture_invalid", "comparison.platform_invalid", "baseline.invalid"])
 def test_promotion_switches_when_diagnostic_is_forbidden_never_bypass(tmp_path: Path,
         flags: tuple[str, ...], code: str) -> None:
-    from tests.test_backend_promotion import candidates, check_pair, comparison
+    from tests.backend_qualification_helpers import candidates, check_pair, comparison
 
     first, second = candidates(tmp_path)
     first["baseline_comparison"] = comparison(code)
@@ -148,7 +148,7 @@ def test_promotion_switches_when_diagnostic_is_forbidden_never_bypass(tmp_path: 
     '"repo": "wrong", "repo":', '"tokens": [], "tokens":',
 ])
 def test_complete_record_when_duplicate_key_is_hidden_rejects(tmp_path: Path, replacement: str) -> None:
-    from tests.test_backend_promotion import candidates
+    from tests.backend_qualification_helpers import candidates
 
     _, record = candidates(tmp_path)
     key = replacement.split(":")[0] + ":"
@@ -162,7 +162,7 @@ def test_complete_record_when_duplicate_key_is_hidden_rejects(tmp_path: Path, re
 
 
 def test_baseline_when_payload_and_signature_are_coordinately_tampered_rejects(tmp_path: Path) -> None:
-    from tests.test_backend_promotion import candidates, payload
+    from tests.backend_qualification_helpers import candidates, payload
     from tests.integration.timing_lattice import JsonValue, signature_sha256
 
     _, record = candidates(tmp_path)
@@ -183,7 +183,7 @@ def test_baseline_when_payload_and_signature_are_coordinately_tampered_rejects(t
 
 @pytest.mark.parametrize("alias", [False, True])
 def test_promotion_when_both_runs_are_one_file_rejects(tmp_path: Path, alias: bool) -> None:
-    from tests.test_backend_promotion import candidates
+    from tests.backend_qualification_helpers import candidates
 
     _, record = candidates(tmp_path)
     path = tmp_path / "candidate.json"
@@ -204,7 +204,7 @@ def test_promotion_when_both_runs_are_one_file_rejects(tmp_path: Path, alias: bo
 ])
 def test_baseline_cli_when_later_promotion_provenance_is_checked(tmp_path: Path,
         decision: str, codes: list[str], allowed: bool) -> None:
-    from tests.test_backend_promotion import candidates, comparison
+    from tests.backend_qualification_helpers import candidates, comparison
 
     _, record = candidates(tmp_path)
     record["record_kind"] = "qualified_backend"
@@ -219,7 +219,7 @@ def test_baseline_cli_when_later_promotion_provenance_is_checked(tmp_path: Path,
 
 
 def _overflow_records(root: Path, field: str) -> tuple[Path, Path]:
-    from tests.test_backend_promotion import candidates, payload
+    from tests.backend_qualification_helpers import candidates, payload
     from tests.integration.timing_lattice import JsonValue
 
     records = candidates(root)
@@ -270,7 +270,7 @@ def test_cli_when_observation_arithmetic_overflows_rejects(tmp_path: Path, field
 def test_load_record_when_overhang_is_representable_preserves_quantization(tmp_path: Path,
         sample_count: int, overhang_us: int) -> None:
     from scripts import compute_backend_fingerprint as checker
-    from tests.test_backend_promotion import candidates, payload
+    from tests.backend_qualification_helpers import candidates, payload
     from tests.integration.timing_lattice import JsonValue
 
     _, record = candidates(tmp_path)
@@ -290,3 +290,21 @@ def test_load_record_when_overhang_is_representable_preserves_quantization(tmp_p
 
     assert parsed.signature == signature
     assert parsed.payload == signed
+
+
+@pytest.mark.parametrize("source", SOURCES)
+def test_qualification_when_any_bound_source_absent_rejects(tmp_path: Path, source: str) -> None:
+    from scripts import compute_backend_fingerprint as checker
+
+    root = checkout(tmp_path)
+    (root / source).unlink()
+
+    with pytest.raises(FileNotFoundError):
+        checker.fingerprint(root, require_sources=True)
+
+
+def test_manifest_when_active_has_exact_twelve_sources() -> None:
+    from scripts import compute_backend_fingerprint as checker
+
+    assert checker.SOURCES == SOURCES
+    assert len(SOURCES) == len(set(SOURCES)) == 12

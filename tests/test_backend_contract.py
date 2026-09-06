@@ -11,6 +11,7 @@ import pytest
 
 import sttx.backend_contract as contract
 import sttx.cli as cli
+from tests.integration import qualification_probes as probes
 from sttx.model import ModelBundle
 
 JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -211,12 +212,12 @@ def test_constructor_kwargs_when_defaults_are_used(constructors: CapturedCalls) 
     assert cli.VAD_BUFFER_SECONDS == 240.0
 
 
-@pytest.mark.parametrize("scenario", [(live, group) for live in (False, True)
+@pytest.mark.parametrize("scenario", [(live, group, gate) for live, gate in ((False, False), (True, False), (True, True))
                                      for group in ("recognizer", "silero", "model", "detector")])
 def test_constructor_kwargs_when_sentinels_are_supplied(
-    constructors: CapturedCalls, monkeypatch: pytest.MonkeyPatch, scenario: tuple[bool, str],
+    constructors: CapturedCalls, monkeypatch: pytest.MonkeyPatch, scenario: tuple[bool, str, bool],
 ) -> None:
-    live_defaults, group = scenario
+    live_defaults, group, gate = scenario
     expected = contract.contract_payload()
     recognizer: contract.RecognizerSettings = {
         "num_threads": 3, "sample_rate": 8000, "feature_dim": 40,
@@ -233,7 +234,9 @@ def test_constructor_kwargs_when_sentinels_are_supplied(
         monkeypatch.setattr(contract, "RECOGNIZER_SETTINGS", recognizer)
         monkeypatch.setattr(contract, "VAD_SETTINGS", vad)
 
-    if group == "recognizer":
+    if gate:
+        _ = probes.make_backends(BUNDLE)
+    elif group == "recognizer":
         if live_defaults:
             _ = cli._make_recognizer_from_bundle(BUNDLE)
         else:
