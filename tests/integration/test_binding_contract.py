@@ -21,11 +21,10 @@ import sherpa_onnx
 from huggingface_hub import hf_hub_download
 
 from sttx.audio import PreparedAudio, normalize_media
-from sttx.backend_contract import PARAKEET_REVISION
+from sttx.backend_contract import ENCODER_FRAME, PARAKEET_REVISION
 from sttx.model import PARAKEET_REPO_ID, SILERO_URL, ModelBundle, resolve_bundle
 
 SAMPLE_RATE = 16_000
-ENCODER_FRAME = 0.08
 CONTROL_TOKENS = frozenset({"", "<blk>", "<blank>", "<s>", "</s>", "<unk>"})
 PUNCTUATION = frozenset({".", "!", "?"})
 RUNTIME_PACKAGES = (

@@ -210,3 +210,33 @@ def test_bootstrap_when_baseline_already_exists_rejects(tmp_path: Path) -> None:
     status = check_pair(tmp_path, pair, "--bootstrap")
 
     assert status != 0
+
+
+def test_synthetic_pair_when_repository_anchor_rotated_is_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests import backend_qualification_helpers as helpers
+
+    source = helpers.checkout(tmp_path / "source")
+    contract = source / "src/sttx/backend_contract.py"
+    current = helpers.contract_payload()["qualified_runs_sha256"]
+    _ = contract.write_text(contract.read_text().replace(json.dumps(current), json.dumps("a" * 64)))
+    monkeypatch.setattr(helpers, "ROOT", source)
+    target = tmp_path / "target"
+
+    pair = helpers.candidates(target)
+
+    assert check_pair(target, pair, "--bootstrap") == 0
+    assert pair[0]["fingerprint"] != pair[1]["fingerprint"]
+
+
+def test_baseline_when_real_qualification_is_promoted_matches_current_contract() -> None:
+    from scripts import compute_backend_fingerprint as checker
+
+    path = checker.ROOT / "tests/integration/qualified_backend.json"
+
+    record = checker.load_record(path, baseline=True)
+
+    checker.check_current(record)
+    assert len(checker.SOURCES) == 12
+    assert record.signature == signature_sha256(record.payload)

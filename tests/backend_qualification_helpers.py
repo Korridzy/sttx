@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,9 @@ def payload() -> SignedPayload:
 
 def candidates(root: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     _ = checkout(root)
+    path = root / "src/sttx/backend_contract.py"
+    _ = path.write_text(re.sub(r'^QUALIFIED_RUNS_SHA256: Final = .+$',
+        'QUALIFIED_RUNS_SHA256: Final = "unset"', path.read_text(), flags=re.MULTILINE))
     _ = (root / SOURCES[2]).write_text("raise RuntimeError('gate must not be imported')\n")
     settings = contract_payload()
     signed = payload()
@@ -84,7 +88,6 @@ def candidates(root: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
         **collections, "signature_sha256": signature_sha256(signed),
         "baseline_comparison": comparison("baseline.missing", comparable=False),
     }
-    path = root / "src/sttx/backend_contract.py"
     _ = path.write_text(path.read_text().replace('"unset"', json.dumps(first["signature_sha256"])))
     second = copy.deepcopy(first)
     second["fingerprint"] = invoke(root).stdout.strip()

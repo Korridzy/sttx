@@ -39,7 +39,7 @@ EXPECTED_PAYLOAD: Final[dict[str, JsonValue]] = {
     "max_chunk_samples": 480_000,
     "vad_window_samples": 512,
     "probe_version": 1,
-    "qualified_runs_sha256": "unset",
+    "qualified_runs_sha256": "a" * 64,
     "recognizer_settings": {
         "num_threads": 1, "sample_rate": 16000, "feature_dim": 80,
         "decoding_method": "greedy_search", "provider": "cpu", "model_type": "nemo_transducer",
@@ -53,7 +53,8 @@ EXPECTED_PAYLOAD: Final[dict[str, JsonValue]] = {
 }
 
 
-def test_canonical_payload_when_serialized() -> None:
+def test_canonical_payload_when_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(contract, "QUALIFIED_RUNS_SHA256", "a" * 64)
     expected = json.dumps(EXPECTED_PAYLOAD, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     actual = json.dumps(contract.contract_payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -61,7 +62,8 @@ def test_canonical_payload_when_serialized() -> None:
     assert actual == expected
 
 
-def test_public_constants_when_exported() -> None:
+def test_public_constants_when_exported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(contract, "QUALIFIED_RUNS_SHA256", "a" * 64)
     expected_names = set(EXPECTED_PAYLOAD)
 
     exported = {
