@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 from .real_pipeline_artifacts import JsonValue, root_manifest
@@ -97,7 +98,7 @@ def _probe_silero(tmp_path: Path, bundle_dir: Path, signum: signal.Signals) -> S
         "raise SystemExit(run([str(media), '-d', str(root/'out')], _dependencies=dependencies, _cwd=root))\n"
     )
     process = subprocess.Popen(
-        [str(Path.cwd() / ".venv" / "bin" / "python"), "-c", code],
+        [sys.executable, "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -146,7 +147,7 @@ def _probe_native_decode(
         "], _dependencies=replace(_PRODUCTION_DEPENDENCIES, transcribe=wrapped_transcribe)))\n"
     )
     process = subprocess.Popen(
-        [str(Path.cwd() / ".venv" / "bin" / "python"), "-c", code],
+        [sys.executable, "-c", code],
         env=env.subprocess_env(offline=True),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

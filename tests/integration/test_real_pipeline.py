@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import wave
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from huggingface_hub import hf_hub_download
+from scripts.compute_backend_fingerprint import fingerprint
 
 from .real_pipeline_artifacts import (
     JsonValue,
@@ -54,6 +56,8 @@ def test_real_pinned_pipeline_gate(
     artifacts = task_artifacts(identity_output, tmp_path)
     evidence: dict[str, JsonValue] = {
         "gate": {"verdict": "started", "assertion": None},
+        "venv": sys.prefix,
+        "executable": sys.executable,
         "commands": {},
         "checks": {},
         "cleanup": {
@@ -63,6 +67,7 @@ def test_real_pinned_pipeline_gate(
         "adversarial_classes": _adversarial_skeleton(),
     }
     try:
+        evidence["fingerprint"] = fingerprint(require_sources=True)
         _write_evidence(artifacts.identity, evidence)
         _ = artifacts.log.write_text("", encoding="utf-8")
         artifacts.done_claim.unlink(missing_ok=True)
@@ -87,7 +92,6 @@ def _run_pipeline(
     from sttx.model import PARAKEET_REPO_ID, PARAKEET_REVISION, SILERO_URL, resolve_bundle
 
     evidence.update({
-        "venv": ".venv",
         "sttx_bin": str(STTX_BIN),
         "cold_env": cold.json(),
         "environment": environment_identity(),

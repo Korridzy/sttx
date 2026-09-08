@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -11,34 +11,181 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    outputs:
+      dist-id: ${{ steps.dist.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - name: Install Poetry
         run: pipx install poetry==2.4.1
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Verify release tag matches package version
-        run: test "${GITHUB_REF_NAME#v}" = "$(poetry version --short)"
-      - name: Build distributions
+      - id: tag
+        name: Verify release tag matches package version
+        run: test "$GITHUB_REF_NAME" = "v$(poetry version --short)"
+      - id: build
+        name: Build distributions
         run: poetry build
-      - uses: actions/upload-artifact@v4
+      - id: dist
+        uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
-  publish:
-    name: publish
+          if-no-files-found: error
+  qualify:
+    name: qualify built wheel
     needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      dist-id: ${{ needs.build.outputs.dist-id }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      EVIDENCE: ${{ github.workspace }}/release-evidence
+      WHEEL_VENV: ${{ github.workspace }}/release-wheel-venv
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - id: system
+        name: Install native tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg strace
+      - id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - id: poetry
+        name: Install Poetry for identity probes
+        run: pipx install poetry==2.4.1
+      - id: detect
+        name: Verify checkout backend identity
+        run: |
+          python3 -I -S -B scripts/backend_change_detector.py --base "$GITHUB_SHA" --head "$GITHUB_SHA" --root "$GITHUB_WORKSPACE"
+          python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
+      - id: dist
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ needs.build.outputs.dist-id }}
+          path: dist/
+          merge-multiple: true
+      - id: install
+        name: Install and prove plain wheel origin
+        run: |
+          test ! -e "$WHEEL_VENV"
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" = 1
+          test -f "${wheels[0]}"
+          python -m venv "$WHEEL_VENV"
+          "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
+          "$WHEEL_VENV/bin/python" -c 'import os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); print(sttx.__file__)'
+      - id: qualification
+        continue-on-error: true
+        run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"'
+      - id: binding
+        continue-on-error: true
+        run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"'
+      - id: pipeline
+        continue-on-error: true
+        run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"'
+      - id: upload_candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: ${{ env.EVIDENCE }}/release-candidate.json
+          if-no-files-found: error
+      - id: upload_binding
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binding
+          path: ${{ env.EVIDENCE }}/release-binding.json
+          if-no-files-found: error
+      - id: upload_pipeline
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-pipeline
+          path: ${{ env.EVIDENCE }}/release-pipeline.json
+          if-no-files-found: error
+      - id: upload_log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-log
+          path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
+          if-no-files-found: error
+      - id: upload_cleanup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-cleanup
+          path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
+          if-no-files-found: error
+      - id: aggregate
+        name: Require complete wheel qualification
+        if: always()
+        env:
+          QUALIFICATION: ${{ steps.qualification.outcome }}
+          BINDING: ${{ steps.binding.outcome }}
+          PIPELINE: ${{ steps.pipeline.outcome }}
+          UPLOAD_CANDIDATE: ${{ steps.upload_candidate.outcome }}
+          UPLOAD_BINDING: ${{ steps.upload_binding.outcome }}
+          UPLOAD_PIPELINE: ${{ steps.upload_pipeline.outcome }}
+          UPLOAD_LOG: ${{ steps.upload_log.outcome }}
+          UPLOAD_CLEANUP: ${{ steps.upload_cleanup.outcome }}
+        run: |
+          for outcome in "$QUALIFICATION" "$BINDING" "$PIPELINE" "$UPLOAD_CANDIDATE" "$UPLOAD_BINDING" "$UPLOAD_PIPELINE" "$UPLOAD_LOG" "$UPLOAD_CLEANUP"; do
+            test "$outcome" = success
+          done
+          python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
+          fingerprint=$(python3 -I -S -B scripts/compute_backend_fingerprint.py)
+          jq -e --arg venv "$WHEEL_VENV" --arg executable "$WHEEL_VENV/bin/python" --arg fingerprint "$fingerprint" \
+            '.venv == $venv and .executable == $executable and .fingerprint == $fingerprint and .gate.verdict == "pass"' \
+            "$EVIDENCE/release-pipeline.json"
+  publish:
+    name: publish
+    needs: [qualify]
+    runs-on: ubuntu-latest
+    outputs:
+      dist-id: ${{ needs.qualify.outputs.dist-id }}
     environment:
       name: pypi
       url: https://pypi.org/project/sttx/
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - id: dist
+        uses: actions/download-artifact@v5
         with:
-          name: dist
+          artifact-ids: ${{ needs.qualify.outputs.dist-id }}
           path: dist/
-      - name: Publish to PyPI
+          merge-multiple: true
+      - id: publish
+        name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+  github-release:
+    name: GitHub release
+    needs: [publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - id: dist
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ needs.publish.outputs.dist-id }}
+          path: dist/
+          merge-multiple: true
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"

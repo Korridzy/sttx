@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
+import signal
+import sys
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,12 +29,12 @@ def mapping(value: YamlValue) -> dict[str, YamlValue]:
     return value
 
 
-def workflow() -> dict[str, YamlValue]:
-    return mapping(yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader))
+def workflow(filename: str = "ci") -> dict[str, YamlValue]:
+    return mapping(yaml.load((ROOT / f".github/workflows/{filename}.yml").read_text(), Loader=yaml.BaseLoader))
 
 
-def steps(job: str = "backend-compat") -> dict[str, dict[str, YamlValue]]:
-    items = mapping(mapping(workflow()["jobs"])[job])["steps"]
+def steps(job: str = "backend-compat", filename: str = "ci") -> dict[str, dict[str, YamlValue]]:
+    items = mapping(mapping(workflow(filename)["jobs"])[job])["steps"]
     assert isinstance(items, list)
     return {str(mapping(item)["id"]): mapping(item) for item in items if "id" in mapping(item)}
 
@@ -170,3 +173,117 @@ def test_gate_shell_preserves_explicit_output_argument(tmp_path: Path, gate: str
     assert arguments[:3] == ["run", "pytest", f"tests/integration/{filename}.py"]
     assert arguments[3:6] == ["-m", "integration", "-q"]
     assert arguments[6:] == [f"--{option}-output={tmp_path}/with spaces/{output}.json"]
+
+
+def test_release_chain_and_exact_artifact() -> None:
+    release = workflow("release")
+    assert release["on"] == {"push": {"tags": ["v*"]}}
+    assert release["permissions"] == {"contents": "read"}
+    jobs = mapping(release["jobs"])
+    assert list(jobs) == ["build", "qualify", "publish", "github-release"]
+    for job, parent in (("qualify", "build"), ("publish", "qualify"), ("github-release", "publish")):
+        current = mapping(jobs[job])
+        assert current["needs"] == [parent]
+        assert "if" not in current and "continue-on-error" not in current
+        assert steps(job, "release")["dist"]["with"] == {
+            "artifact-ids": f"${{{{ needs.{parent}.outputs.dist-id }}}}", "path": "dist/", "merge-multiple": "true"}
+        assert steps(job, "release")["dist"]["uses"] == "actions/download-artifact@v5"
+    for job, origin in (("build", "steps.dist.outputs.artifact-id"), ("qualify", "needs.build.outputs.dist-id"),
+                        ("publish", "needs.qualify.outputs.dist-id")):
+        assert mapping(jobs[job])["outputs"] == {"dist-id": f"${{{{ {origin} }}}}"}
+    for job in ("build", "qualify"):
+        assert "permissions" not in mapping(jobs[job])
+        assert steps(job, "release")["checkout"]["with"] == {"ref": "${{ github.sha }}"}
+    build = steps("build", "release")
+    assert build["build"]["run"] == "poetry build"
+    assert build["dist"]["uses"] == "actions/upload-artifact@v4"
+    assert build["dist"]["with"] == {"name": "dist", "path": "dist/", "if-no-files-found": "error"}
+    assert mapping(jobs["publish"])["permissions"] == {"id-token": "write"}
+    assert mapping(mapping(jobs["publish"])["environment"])["name"] == "pypi"
+    assert steps("publish", "release")["publish"]["uses"] == "pypa/gh-action-pypi-publish@release/v1"
+    assert mapping(jobs["github-release"])["permissions"] == {"contents": "write"}
+    github = steps("github-release", "release")["release"]
+    assert github["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert github["run"] == 'gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"'
+
+
+def test_release_qualification_boundaries() -> None:
+    job = mapping(mapping(workflow("release")["jobs"])["qualify"])
+    items = steps("qualify", "release")
+    assert job["timeout-minutes"] == "60"
+    assert job["env"] == {"EVIDENCE": "${{ github.workspace }}/release-evidence",
+                          "WHEEL_VENV": "${{ github.workspace }}/release-wheel-venv"}
+    assert list(items) == ["checkout", "system", "python", "poetry", "detect", "dist", "install", *GATES, *UPLOADS, "aggregate"]
+    for name in ("system", "python", "poetry"):
+        assert items[name].get("run") == steps()[name].get("run")
+        assert items[name].get("with") == steps()[name].get("with")
+    for name, filename in zip(UPLOADS, FILES, strict=True):
+        output = f"release-{filename}" if filename.endswith(".json") and not filename.startswith("task-") else filename
+        assert items[name]["if"] == "always()"
+        assert items[name]["uses"] == "actions/upload-artifact@v4"
+        assert "continue-on-error" not in items[name]
+        assert items[name]["with"] == {"name": f"release-{name.removeprefix('upload_')}",
+                                       "path": f"${{{{ env.EVIDENCE }}}}/{output}", "if-no-files-found": "error"}
+    for name in GATES:
+        expected = str(steps()[name]["run"]).replace("poetry run pytest", '"$WHEEL_VENV/bin/python" -m pytest')
+        assert items[name]["run"] == expected.replace('$EVIDENCE/', '$EVIDENCE/release-')
+        assert items[name]["continue-on-error"] == "true"
+        assert "if" not in items[name]
+    assert items["aggregate"]["if"] == "always()"
+    assert items["aggregate"]["env"] == steps()["aggregate"]["env"]
+    assert "scripts/backend_change_detector.py" in str(items["detect"]["run"])
+    assert "poetry install" not in str(job) and "--editable" not in str(job)
+    assert "cache" not in str(workflow("release"))
+    install = str(items["install"]["run"]).splitlines()
+    assert len(install) == 7
+    assert install[:5] == ['test ! -e "$WHEEL_VENV"', 'wheels=(dist/*.whl)',
+                           'test "${#wheels[@]}" = 1', 'test -f "${wheels[0]}"', 'python -m venv "$WHEEL_VENV"']
+    assert install[5] == '"$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest'
+    assert 'Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())' in install[6]
+
+
+@pytest.mark.parametrize("tag", ["v0.1.1", "v0.1.2", "0.1.1", "vv0.1.1"])
+def test_release_tag_shell(tag: str) -> None:
+    script = steps("build", "release")["tag"]["run"]
+    result = shell('poetry() { printf "0.1.1\\n"; };\n' + str(script), {"GITHUB_REF_NAME": tag})
+    assert (result.returncode == 0) == (tag == "v0.1.1")
+
+
+@pytest.mark.parametrize("failed", ["", *GATES, *UPLOADS, "venv", "executable", "fingerprint", "missing"])
+@pytest.mark.parametrize("outcome", ["failure", "skipped", "cancelled", ""])
+def test_release_aggregate_shell(tmp_path: Path, failed: str, outcome: str) -> None:
+    from .backend_qualification_helpers import invoke
+
+    evidence = {"venv": str(tmp_path / "wheel"), "executable": str(tmp_path / "wheel/bin/python"),
+                "fingerprint": invoke(ROOT).stdout.strip(), "gate": {"verdict": "pass", "assertion": "all"}}
+    if failed in ("venv", "executable", "fingerprint"):
+        evidence[failed] = "wrong"
+    if failed != "missing":
+        _ = (tmp_path / "release-pipeline.json").write_text(json.dumps(evidence))
+    env = {name.upper(): "success" for name in (*GATES, *UPLOADS)}
+    if failed in (*GATES, *UPLOADS):
+        env[failed.upper()] = outcome
+    result = shell(steps("qualify", "release")["aggregate"]["run"],
+                   {**env, "EVIDENCE": str(tmp_path), "WHEEL_VENV": str(tmp_path / "wheel")})
+    assert (result.returncode == 0) == (failed == ""), result.stderr
+
+
+@pytest.mark.parametrize("phase", ["silero", "native_decode"])
+def test_release_signal_child_uses_active_python(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+    from .integration import real_pipeline_signals as signals
+    from .integration.real_pipeline_artifacts import JsonValue
+    from .integration.real_pipeline_runner import sanitized_env
+
+    active = str(tmp_path / "wheel/bin/python")
+    monkeypatch.setattr(sys, "executable", active)
+    commands: list[list[str]] = []
+    def capture(command: list[str], **_kwargs: JsonValue) -> None:
+        commands.append(command)
+        raise InterruptedError("captured child launch")
+    monkeypatch.setattr(subprocess, "Popen", capture)
+    with pytest.raises(InterruptedError, match="captured child launch"):
+        if phase == "silero":
+            _ = signals._probe_silero(tmp_path, tmp_path, signal.SIGINT)
+        else:
+            _ = signals._probe_native_decode(tmp_path, sanitized_env(tmp_path / "cold"), tmp_path, tmp_path, signal.SIGINT)
+    assert commands[0][:2] == [active, "-c"]

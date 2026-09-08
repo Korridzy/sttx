@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -71,6 +72,11 @@ def test_failed_pipeline_lifecycle_preserves_evidence(
         "type": exception_type.__name__, "message": "injected lifecycle failure",
     }
     assert evidence["environment"] == {"probe": "offline"}
+    from scripts.compute_backend_fingerprint import fingerprint
+
+    assert evidence["venv"] == sys.prefix
+    assert evidence["executable"] == sys.executable
+    assert evidence["fingerprint"] == fingerprint(require_sources=True)
     assert evidence["commands"] == {}
     if after_audio:
         assert json_mapping(evidence["model"], "model")["commit"] == PARAKEET_REVISION
