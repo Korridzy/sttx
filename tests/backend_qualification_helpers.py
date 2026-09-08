@@ -117,7 +117,7 @@ def observation_case() -> tuple[schema.Observations, schema.Expectations]:
             "name": contract["fixture_filename"], "sha256": contract["fixture_sha256"]},
         dependencies={"huggingface-hub": "1.29.0", "numpy": "2.4.6", "sherpa-onnx": "1.13.6",
                       "sherpa-onnx-bin": "1.13.6"},
-        platform={"system": "Linux", "machine": "x86_64"}, probe_version=1,
+        platform={"system": "Linux", "machine": "x86_64"}, probe_version=contract["probe_version"],
         quantum_us=80_000, max_overhang_us=1_000_000, fingerprint="f" * 64)
     signed = payload()
     observations: schema.Observations = {"record_kind": "qualification_candidate", "schema_version": 1,

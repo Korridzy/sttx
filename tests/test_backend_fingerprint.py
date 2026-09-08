@@ -51,6 +51,8 @@ def test_fingerprint_when_future_gate_appears(tmp_path: Path) -> None:
     ("order", False), ("metadata", False), ("dependency", True), ("contract", True),
 ])
 def test_fingerprint_when_identity_inputs_change(tmp_path: Path, mutation: str, changed: bool) -> None:
+    from sttx.backend_contract import PROBE_VERSION
+
     root = checkout(tmp_path)
     before = invoke(root)
     path = root / ("src/sttx/backend_contract.py" if mutation == "contract" else "pyproject.toml")
@@ -60,7 +62,7 @@ def test_fingerprint_when_identity_inputs_change(tmp_path: Path, mutation: str, 
                   '"sherpa-onnx-bin==1.13.6",\n    "sherpa-onnx==1.13.6",'),
         "metadata": ('version = "0.1.1"', 'version = "9.9.9"'),
         "dependency": ("numpy==2.4.6", "numpy==2.4.7"),
-        "contract": ("PROBE_VERSION: Final = 1", "PROBE_VERSION: Final = 2"),
+        "contract": (f"PROBE_VERSION: Final = {PROBE_VERSION}", f"PROBE_VERSION: Final = {PROBE_VERSION + 1}"),
     }
     old, new = replacements[mutation]
     assert old in text

@@ -49,8 +49,8 @@ def run_qualification(output: Path, scratch: Path,
             envelope["exception"] = {"type": type(error).__name__, "message": str(error)}
             try:
                 write_json(destination, envelope)
-            except (OSError, ValueError) as artifact_error:
-                error.add_note(f"qualification failure artifact could not be updated: {artifact_error}")
+            except BaseException as artifact_error:  # noqa: BROAD_EXCEPT_OK - retain the primary failure across secondary signals
+                error.add_note(f"qualification failure artifact could not be updated: {type(artifact_error).__name__}: {artifact_error}")
         raise
 
 

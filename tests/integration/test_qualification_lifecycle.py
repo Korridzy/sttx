@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -213,4 +214,46 @@ def test_writer_when_replace_fails_preserves_old_document(tmp_path: Path, monkey
         conftest.write_json(output, {"new": True})
 
     assert output.read_bytes() == b"previous document"
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+@pytest.mark.parametrize("real_signal", [False, True], ids=["injected-interruption", "actual-sigint"])
+def test_gate_when_secondary_interruption_at_replace_preserves_original(tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, real_signal: bool) -> None:
+    from tests import conftest
+
+    output = tmp_path / "candidate.json"
+    original = RuntimeError("original acquisition failure")
+    started: list[bytes] = []
+    staging_paths: list[Path] = []
+
+    def interrupted_replace(source: Path, destination: Path) -> None:
+        assert destination == output
+        assert json.loads(source.read_text())["phase"] == "failed"
+        staging_paths.append(source)
+        if real_signal:
+            signal.raise_signal(signal.SIGINT)
+        else:
+            raise KeyboardInterrupt("secondary interruption")
+
+    def acquire() -> NoReturn:
+        started.append(output.read_bytes())
+        monkeypatch.setattr(conftest.os, "replace", interrupted_replace)
+        raise original
+
+    monkeypatch.setattr(gate.probes, "resolve_bundle", acquire)
+    previous_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        with pytest.raises(BaseException) as caught:
+            gate.run_qualification(output, tmp_path, tmp_path / "absent.json")
+    finally:
+        _ = signal.signal(signal.SIGINT, previous_handler)
+
+    assert caught.value is original
+    assert len(original.__notes__) == 1
+    assert "could not be updated" in original.__notes__[0]
+    assert "KeyboardInterrupt" in original.__notes__[0]
+    assert output.read_bytes() == started[0]
+    assert json.loads(output.read_text())["phase"] == "started"
+    assert len(staging_paths) == 1 and not staging_paths[0].exists()
     assert list(tmp_path.glob(".*.tmp")) == []
