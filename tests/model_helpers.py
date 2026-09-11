@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from multiprocessing.queues import Queue
+
+    from sttx.model import BundleMessage
 
 PARAKEET_NAMES = (
     "encoder.int8.onnx",
@@ -17,6 +24,14 @@ SILERO_RELEASE_URL = (
     "silero_vad.onnx"
 )
 SnapshotCall = dict[str, str | tuple[str, ...] | bool | Path | None]
+
+
+def dying_staging_worker(messages: Queue[BundleMessage], token: str) -> None:
+    del messages
+    cache_dir = Path.home() / ".cache" / "sttx"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _ = (cache_dir / f".{ALL_NAMES[-1]}.{token}.abc.tmp").write_bytes(b"partial")
+    os._exit(1)
 
 
 def model_module():

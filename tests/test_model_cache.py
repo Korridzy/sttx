@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import signal
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from .model_helpers import (
     PARAKEET_NAMES,
     bundle_paths,
+    dying_staging_worker,
     model_module,
     silero_writer,
     snapshot_fake,
@@ -186,6 +188,60 @@ def test_silero_staging_is_unique_cache_sibling(tmp_path: Path) -> None:
     assert len({path.name for path in seen}) == 2
     assert all(path.parent.name in {"cache-a", "cache-b"} for path in seen)
     assert all(not path.exists() for path in seen)
+
+
+def test_cancellable_worker_death_removes_owned_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a cancellable acquisition rooted in an isolated home directory.
+    model = model_module()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_dir = tmp_path / ".cache" / "sttx"
+
+    # When: the spawned worker dies after creating its owned staging file.
+    with pytest.raises(model.ModelEnvironmentError):
+        model.resolve_bundle_cancellable(_worker=dying_staging_worker)
+
+    # Then: the parent removes the abandoned staging file.
+    assert list(cache_dir.glob("*.tmp")) == []
+
+
+def test_cancellable_worker_death_preserves_foreign_staging_and_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a foreign staging file and valid final in the isolated cache.
+    model = model_module()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cache_dir = tmp_path / ".cache" / "sttx"
+    cache_dir.mkdir(parents=True)
+    foreign = cache_dir / f".{model.SILERO_FILENAME}.deadbeefdeadbeef.x.tmp"
+    final = cache_dir / model.SILERO_FILENAME
+    foreign.write_bytes(b"foreign")
+    final.write_bytes(b"final")
+
+    # When: another invocation's worker dies with its own staging file.
+    with pytest.raises(model.ModelEnvironmentError):
+        model.resolve_bundle_cancellable(_worker=dying_staging_worker)
+
+    # Then: the foreign staging file and final asset survive.
+    assert foreign.exists()
+    assert final.exists()
+
+
+def test_worker_signal_handler_latches_after_first_signal() -> None:
+    # Given: a fresh worker signal handler.
+    model = model_module()
+    handler = model._make_worker_signal_handler()
+
+    # When: the first signal requests worker shutdown.
+    with pytest.raises(SystemExit) as captured:
+        handler(signal.SIGTERM, None)
+
+    # Then: its exit code names the signal and a second signal is ignored.
+    assert captured.value.code == 128 + signal.SIGTERM
+    handler(signal.SIGTERM, None)
 
 
 @pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
