@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from .real_pipeline_artifacts import JsonValue
 from .real_pipeline_runner import CacheEnv, STTX_BIN
 
 SIGNAL_TIMEOUT_SECONDS = 30.0
+
+
+class ConnectProxy(Protocol):
+    @property
+    def expected_target(self) -> str: ...
+
+    @property
+    def connected(self) -> threading.Event: ...
+
+    @property
+    def targets(self) -> queue.Queue[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +74,33 @@ def start_sttx(
     )
 
 
+def start_cancellable_acquisition(env: CacheEnv, proxy_url: str) -> subprocess.Popen[str]:
+    code = (
+        "import signal\n"
+        "from sttx.model import resolve_bundle_cancellable\n"
+        "def exit_on_signal(signum, _frame):\n"
+        "    raise SystemExit(128 + signum)\n"
+        "signal.signal(signal.SIGINT, exit_on_signal)\n"
+        "signal.signal(signal.SIGTERM, exit_on_signal)\n"
+        "resolve_bundle_cancellable()\n"
+    )
+    process_env = env.subprocess_env(offline=True)
+    process_env.update({
+        "https_proxy": proxy_url,
+        "HTTPS_PROXY": proxy_url,
+        "no_proxy": "",
+        "NO_PROXY": "",
+    })
+    return subprocess.Popen(
+        [sys.executable, "-c", code],
+        env=process_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+
 def finish_probe(
     phase: str,
     signum: signal.Signals,
@@ -99,6 +141,26 @@ def finish_probe(
         staging=sorted(path.name for path in root.rglob("*.tmp")),
         live_after=_is_live(process.pid),
     )
+
+
+def wait_for_connect(
+    proxy: ConnectProxy,
+    process: subprocess.Popen[str],
+    root: Path,
+) -> dict[str, JsonValue]:
+    if not proxy.connected.wait(timeout=SIGNAL_TIMEOUT_SECONDS):
+        if process.poll() is not None:
+            raise AssertionError("acquisition driver exited before CONNECT barrier")
+        raise AssertionError("acquisition CONNECT barrier timed out")
+    target = proxy.targets.get_nowait()
+    if target != proxy.expected_target:
+        raise AssertionError(f"unexpected CONNECT target: {target}")
+    staging = sorted(root.rglob("*.tmp"))
+    return {
+        "connect_target": target,
+        "process_live_at_barrier": process.poll() is None,
+        "staging_at_barrier": [str(path) for path in staging],
+    }
 
 
 def wait_for_hf_partial(root: Path, process: subprocess.Popen[str]) -> dict[str, JsonValue]:

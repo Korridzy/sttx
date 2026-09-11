@@ -271,11 +271,11 @@ def _adversarial_skeleton() -> dict[str, JsonValue]:
     return {
         "malformed_input": "missing bundle files, poisoned sentinels, trace fixtures, silence/no-audio",
         "prompt_injection": "N/A: no instruction-taking surface",
-        "cancel_resume": "HF, Silero, and native decode SIGINT/SIGTERM barriers are probed by Todo 10",
+        "cancel_resume": "HF, injected Silero, production acquisition, and native decode signal barriers are probed",
         "stale_state": "sanitized cold root, warm offline root identity, poisoned sentinel envs, post-signal manifest equality",
         "dirty_worktree": "preserve .serena and ignored caches; commit only Todo 10 test files",
         "hung_or_long_commands": "subprocess timeouts on all CLI/trace commands",
         "flaky_tests": "deterministic media fixtures and parser fixtures",
         "misleading_success_output": "exit/XML/traces/transcript equality cross-checked",
-        "repeated_interruptions": "HF, Silero, and native decode SIGINT/SIGTERM use distinct roots",
+        "repeated_interruptions": "HF, injected Silero, production acquisition, and native decode probes use distinct roots",
     }

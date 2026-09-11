@@ -1,22 +1,76 @@
 from __future__ import annotations
 
+import os
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .real_pipeline_artifacts import JsonValue, root_manifest
 from .real_pipeline_runner import CacheEnv, sanitized_env
 from .real_pipeline_signal_process import (
+    SIGNAL_TIMEOUT_SECONDS,
     SignalProbe,
     finish_probe,
+    start_cancellable_acquisition,
     start_sttx,
+    wait_for_connect,
     wait_for_decode_cpu,
     wait_for_hf_partial,
     wait_for_path,
 )
-from sttx.model import SILERO_URL
+from sttx.model import (
+    PARAKEET_FILENAMES,
+    PARAKEET_REPO_ID,
+    PARAKEET_REVISION,
+    SILERO_URL,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ConnectProxy:
+    url: str
+    expected_target: str
+    connected: threading.Event
+    targets: queue.Queue[str]
+
+
+@contextmanager
+def _connect_proxy(expected_target: str) -> Generator[_ConnectProxy, None, None]:
+    connected = threading.Event()
+    release = threading.Event()
+    targets: queue.Queue[str] = queue.Queue()
+
+    class ConnectHandler(BaseHTTPRequestHandler):
+        def do_CONNECT(self) -> None:  # noqa: N802
+            targets.put(self.path)
+            connected.set()
+            _ = release.wait()
+
+    server = HTTPServer(("127.0.0.1", 0), ConnectHandler)
+    server.timeout = SIGNAL_TIMEOUT_SECONDS
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        yield _ConnectProxy(
+            url=f"http://127.0.0.1:{server.server_port}",
+            expected_target=expected_target,
+            connected=connected,
+            targets=targets,
+        )
+    finally:
+        release.set()
+        server.server_close()
+        thread.join()
+        assert not thread.is_alive()
 
 
 def prove_signal_barriers(
@@ -31,6 +85,7 @@ def prove_signal_barriers(
     for signum in (signal.SIGINT, signal.SIGTERM):
         probes.append(_probe_hf(tmp_path, bundle_dir, media, signum))
         probes.append(_probe_silero(tmp_path, bundle_dir, signum))
+        probes.append(_probe_cancellable_acquisition(tmp_path, bundle_dir, signum))
         probes.append(_probe_native_decode(tmp_path, cold, bundle_dir, media, signum))
     after = root_manifest(cold.root)
     assert before == after
@@ -55,7 +110,7 @@ def _probe_hf(
     env.values["HF_HUB_DISABLE_XET"] = "1"
     silero_final = env.root / "home" / ".cache" / "sttx" / "silero_vad.onnx"
     silero_final.parent.mkdir(parents=True)
-    shutil.copy2(bundle_dir / "silero_vad.onnx", silero_final)
+    _ = shutil.copy2(bundle_dir / "silero_vad.onnx", silero_final)
     outdir = env.root / "out"
     process = start_sttx(media, outdir, env)
     barrier = wait_for_hf_partial(env.root, process)
@@ -113,6 +168,43 @@ def _probe_silero(tmp_path: Path, bundle_dir: Path, signum: signal.Signals) -> S
     barrier["staged_size"] = int(staged_size)
     barrier["official_url"] = SILERO_URL
     return finish_probe("silero", signum, root, process, barrier)
+
+
+def _probe_cancellable_acquisition(
+    tmp_path: Path,
+    bundle_dir: Path,
+    signum: signal.Signals,
+) -> SignalProbe:
+    root = tmp_path / f"cancellable-acquisition-{signum.name}"
+    env = sanitized_env(root)
+    snapshot = (
+        Path(env.values["HF_HUB_CACHE"])
+        / f"models--{PARAKEET_REPO_ID.replace('/', '--')}"
+        / "snapshots"
+        / PARAKEET_REVISION
+    )
+    snapshot.mkdir(parents=True)
+    for name in PARAKEET_FILENAMES:
+        _ = shutil.copy2(bundle_dir / name, snapshot / name)
+
+    with _connect_proxy(f"{urlsplit(SILERO_URL).netloc}:443") as proxy:
+        process = start_cancellable_acquisition(env, proxy.url)
+        try:
+            barrier = wait_for_connect(proxy, process, root)
+            probe = finish_probe(
+                "cancellable_acquisition",
+                signum,
+                root,
+                process,
+                barrier,
+            )
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                _ = process.communicate(timeout=5)
+    remaining = sorted(root.rglob("*.tmp"))
+    assert remaining == [], probe.to_json()
+    return probe
 
 
 def _probe_native_decode(

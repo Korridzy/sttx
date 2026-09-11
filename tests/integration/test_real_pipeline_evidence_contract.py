@@ -1,3 +1,4 @@
+# noqa: SIZE_OK because evidence scenarios share one canonical valid payload
 from __future__ import annotations
 
 import json
@@ -269,6 +270,37 @@ def test_signal_barriers_reject_bookkeeping_and_cpu_only_proofs(tmp_path: Path) 
         assert_todo10_contract(evidence)
 
 
+def test_cancellable_acquisition_signal_phases_are_required(tmp_path: Path) -> None:
+    # Given otherwise valid evidence without production acquisition probes.
+    evidence = _valid_evidence(tmp_path)
+    signals = evidence["signals"]
+    assert isinstance(signals, dict)
+    probes = signals["probes"]
+    assert isinstance(probes, list)
+    signals["probes"] = [
+        probe
+        for probe in probes
+        if isinstance(probe, dict) and probe["phase"] != "cancellable_acquisition"
+    ]
+
+    # When/Then the evidence contract rejects the missing production path.
+    with pytest.raises(EvidenceContractError, match="missing signal probes"):
+        assert_todo10_contract(evidence)
+
+
+def test_cancellable_acquisition_signal_phase_rejects_staging_residue(
+    tmp_path: Path,
+) -> None:
+    # Given production acquisition evidence that retains its staging file.
+    evidence = _valid_evidence(tmp_path)
+    probe = _first_probe(evidence, "cancellable_acquisition", "SIGINT")
+    probe["staging"] = [".silero_vad.onnx.token.tmp"]
+
+    # When/Then the evidence contract rejects the leaked staging file.
+    with pytest.raises(EvidenceContractError, match="left Silero staging"):
+        assert_todo10_contract(evidence)
+
+
 def test_cleanup_probe_inside_pytest_must_be_marked_non_final(tmp_path: Path) -> None:
     evidence = _valid_evidence(tmp_path)
     cleanup = evidence["cleanup"]
@@ -311,9 +343,14 @@ def _valid_evidence(tmp_path: Path) -> dict[str, JsonValue]:
     }
     warm_assets = {name: dict(identity) for name, identity in assets.items()}
     probes: list[JsonValue] = []
-    for phase in ("hf", "silero", "native_decode"):
+    for phase in ("hf", "silero", "cancellable_acquisition", "native_decode"):
         for signum in ("SIGINT", "SIGTERM"):
-            probes.append({"phase": phase, "signum": signum, "barrier": _barrier(tmp_path, phase)})
+            probes.append({
+                "phase": phase,
+                "signum": signum,
+                "barrier": _barrier(tmp_path, phase),
+                "staging": [],
+            })
     return {
         "cold_env": {"values": {"HF_HUB_CACHE": str(hf_hub)}},
         "model": {
@@ -359,6 +396,13 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
         case "silero":
             staged = str(tmp_path / ".silero_vad.onnx.tmp")
             return {"ready": staged, "staged_path": staged, "staged_size": 64}
+        case "cancellable_acquisition":
+            staged = str(tmp_path / ".silero_vad.onnx.token.tmp")
+            return {
+                "connect_target": "github.com:443",
+                "process_live_at_barrier": True,
+                "staging_at_barrier": [staged],
+            }
         case "native_decode":
             return {
                 "cpu_ticks_before": 10,

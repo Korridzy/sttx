@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .real_pipeline_artifacts import JsonValue
 
@@ -31,7 +32,10 @@ def assert_todo10_contract(evidence: Mapping[str, JsonValue]) -> None:
             f"{name}.resolved_path",
         )
     _assert_warm_identity(evidence, model)
-    _assert_signal_barriers(_sequence(_mapping(evidence, "signals"), "probes"))
+    _assert_signal_barriers(
+        _sequence(_mapping(evidence, "signals"), "probes"),
+        _text(model, "silero_official_url"),
+    )
     _assert_cleanup(_mapping(evidence, "cleanup"))
 
 
@@ -67,12 +71,17 @@ def _assert_warm_identity(
                 raise EvidenceContractError(f"warm {name}.{field} does not match cold identity")
 
 
-def _assert_signal_barriers(probes: Sequence[JsonValue]) -> None:
+def _assert_signal_barriers(
+    probes: Sequence[JsonValue],
+    silero_url: str,
+) -> None:
     expected = {
         ("hf", "SIGINT"),
         ("hf", "SIGTERM"),
         ("silero", "SIGINT"),
         ("silero", "SIGTERM"),
+        ("cancellable_acquisition", "SIGINT"),
+        ("cancellable_acquisition", "SIGTERM"),
         ("native_decode", "SIGINT"),
         ("native_decode", "SIGTERM"),
     }
@@ -88,6 +97,12 @@ def _assert_signal_barriers(probes: Sequence[JsonValue]) -> None:
                 _assert_hf_barrier(barrier)
             case "silero":
                 _assert_silero_barrier(barrier)
+            case "cancellable_acquisition":
+                _assert_cancellable_acquisition_barrier(barrier, silero_url)
+                if _sequence(probe, "staging"):
+                    raise EvidenceContractError(
+                        "cancelled acquisition left Silero staging files"
+                    )
             case "native_decode":
                 _assert_native_decode_barrier(barrier)
             case _:
@@ -129,6 +144,26 @@ def _assert_silero_barrier(barrier: Mapping[str, JsonValue]) -> None:
         raise EvidenceContractError("Silero barrier staged path does not match ready marker")
     if _number(barrier, "staged_size") <= 0:
         raise EvidenceContractError("Silero barrier did not record nonzero staged bytes")
+
+
+def _assert_cancellable_acquisition_barrier(
+    barrier: Mapping[str, JsonValue],
+    silero_url: str,
+) -> None:
+    parsed_url = urlsplit(silero_url)
+    expected_target = f"{parsed_url.hostname}:{parsed_url.port or 443}"
+    if _text(barrier, "connect_target") != expected_target:
+        raise EvidenceContractError("acquisition proxy did not intercept the Silero host")
+    if _text(barrier, "process_live_at_barrier") != "true":
+        raise EvidenceContractError("acquisition driver was not live at the CONNECT barrier")
+    staging = [
+        Path(_text(value, "staging path")).name
+        for value in _sequence(barrier, "staging_at_barrier")
+    ]
+    if len(staging) != 1 or not (
+        staging[0].startswith(".silero_vad.onnx.") and staging[0].endswith(".tmp")
+    ):
+        raise EvidenceContractError("acquisition CONNECT barrier has no owned Silero staging file")
 
 
 def _assert_native_decode_barrier(barrier: Mapping[str, JsonValue]) -> None:
