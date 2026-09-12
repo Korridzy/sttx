@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from collections.abc import Mapping
@@ -14,6 +15,51 @@ from .real_pipeline_evidence_contract import (
     EvidenceContractError,
     assert_todo10_contract,
 )
+from .real_pipeline_signal_process import FifoBarrier
+
+
+def test_fifo_barrier_waits_for_child_record(tmp_path: Path) -> None:
+    fifo = tmp_path / "announced"
+    with FifoBarrier.open(fifo, "delivered") as barrier:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os\n"
+                    f"fd = os.open({str(fifo)!r}, os.O_WRONLY)\n"
+                    "os.write(fd, b'decode_entered\\n')\n"
+                    "os.close(fd)\n"
+                ),
+            ],
+            text=True,
+        )
+        assert barrier.wait(process, timeout=1.0) == "decode_entered"
+    assert process.wait(timeout=1.0) == 0
+
+
+def test_fifo_barrier_kills_silent_child_on_bounded_timeout(tmp_path: Path) -> None:
+    fifo = tmp_path / "silent"
+    with FifoBarrier.open(fifo, "silent barrier") as barrier:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import signal; signal.pause()"],
+            text=True,
+        )
+        with pytest.raises(AssertionError, match="silent barrier.*timed out"):
+            _ = barrier.wait(process, timeout=0.1)
+    assert process.wait(timeout=1.0) != 0
+
+
+def test_fifo_barrier_names_child_that_exits_before_record(tmp_path: Path) -> None:
+    fifo = tmp_path / "exited"
+    with FifoBarrier.open(fifo, "exit barrier") as barrier:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "raise SystemExit(3)"],
+            text=True,
+        )
+        with pytest.raises(AssertionError, match="exit barrier.*child exited first"):
+            _ = barrier.wait(process, timeout=0.5)
+    assert process.wait(timeout=1.0) == 3
 
 
 @pytest.mark.parametrize("after_audio", [False, True])
@@ -216,7 +262,9 @@ def test_qa_wav_source_sample_rate_accepts_observed_upstream_rate(tmp_path: Path
             assert_todo10_contract(evidence)
 
 
-def test_signal_barriers_reject_bookkeeping_and_cpu_only_proofs(tmp_path: Path) -> None:
+def test_signal_barriers_reject_bookkeeping_and_incomplete_decode_proofs(
+    tmp_path: Path,
+) -> None:
     evidence = _valid_evidence(tmp_path)
     hf_probe = _first_probe(evidence, "hf", "SIGINT")
     for partial in (
@@ -262,11 +310,26 @@ def test_signal_barriers_reject_bookkeeping_and_cpu_only_proofs(tmp_path: Path) 
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
     decode_probe["barrier"] = {
-        "cpu_ticks_before": 10,
-        "cpu_ticks_after": 11,
-        "ready": str(tmp_path / "ready"),
+        "decode_returned_exists": False,
+        "output_finals_exist": False,
     }
     with pytest.raises(EvidenceContractError, match="real decode marker"):
+        assert_todo10_contract(evidence)
+
+    evidence = _valid_evidence(tmp_path)
+    decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+    barrier = decode_probe["barrier"]
+    assert isinstance(barrier, dict)
+    barrier["decode_returned_exists"] = True
+    with pytest.raises(EvidenceContractError, match="native decode returned"):
+        assert_todo10_contract(evidence)
+
+    evidence = _valid_evidence(tmp_path)
+    decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+    barrier = decode_probe["barrier"]
+    assert isinstance(barrier, dict)
+    barrier["output_finals_exist"] = True
+    with pytest.raises(EvidenceContractError, match="final outputs"):
         assert_todo10_contract(evidence)
 
 
@@ -405,9 +468,8 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
             }
         case "native_decode":
             return {
-                "cpu_ticks_before": 10,
-                "cpu_ticks_after": 11,
-                "real_decode_entered": str(tmp_path / "real_decode_entered"),
+                "real_decode_entered": "decode_entered",
+                "decode_returned_exists": False,
                 "output_finals_exist": False,
             }
         case _:

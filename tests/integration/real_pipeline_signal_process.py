@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import queue
+import select
 import signal
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Protocol
 
 from .real_pipeline_artifacts import JsonValue
@@ -27,6 +29,71 @@ class ConnectProxy(Protocol):
 
     @property
     def targets(self) -> queue.Queue[str]: ...
+
+
+@dataclass(slots=True)
+class FifoBarrier:
+    path: Path
+    name: str
+    descriptor: int
+
+    @classmethod
+    def open(cls, path: Path, name: str) -> FifoBarrier:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        return cls(path=path, name=name, descriptor=descriptor)
+
+    def __enter__(self) -> FifoBarrier:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        os.close(self.descriptor)
+
+    def wait(
+        self,
+        process: subprocess.Popen[str],
+        *,
+        timeout: float = SIGNAL_TIMEOUT_SECONDS,
+    ) -> str:
+        if process.poll() is not None:
+            raise AssertionError(f"{self.name}: child exited first ({process.returncode})")
+        deadline = time.monotonic() + timeout
+        remaining = max(0.0, deadline - time.monotonic())
+        readable, _, _ = select.select([self.descriptor], [], [], remaining)
+        if not readable:
+            if process.poll() is not None:
+                raise AssertionError(f"{self.name}: child exited first ({process.returncode})")
+            process.kill()
+            raise AssertionError(f"{self.name}: barrier timed out")
+
+        record = bytearray()
+        while b"\n" not in record:
+            try:
+                chunk = os.read(self.descriptor, 4096)
+            except BlockingIOError as error:
+                process.kill()
+                raise AssertionError(f"{self.name}: incomplete barrier record") from error
+            if not chunk:
+                if process.poll() is not None:
+                    raise AssertionError(
+                        f"{self.name}: child exited first ({process.returncode})"
+                    )
+                process.kill()
+                raise AssertionError(f"{self.name}: FIFO closed before a complete record")
+            record.extend(chunk)
+        line, _, _ = record.partition(b"\n")
+        try:
+            return line.decode("utf-8")
+        except UnicodeDecodeError as error:
+            process.kill()
+            raise AssertionError(f"{self.name}: barrier record is not UTF-8") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,100 +231,63 @@ def wait_for_connect(
     }
 
 
-def wait_for_hf_partial(root: Path, process: subprocess.Popen[str]) -> dict[str, JsonValue]:
-    deadline = time.monotonic() + SIGNAL_TIMEOUT_SECONDS
-    required = {"encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"}
-    while time.monotonic() < deadline:
-        hf_roots = (root / "hf" / "hub", root / "hf" / "xet")
-        partials: list[Path] = []
-        sizes: dict[Path, int] = {}
-        for hf_root in hf_roots:
-            if not hf_root.exists():
-                continue
-            for path in hf_root.rglob("*"):
-                if not path.is_file():
-                    continue
-                try:
-                    size = path.stat().st_size
-                except FileNotFoundError:
-                    continue
-                if size > 0:
-                    partials.append(path)
-                    sizes[path] = size
-        runtime = [
-            path
-            for path in partials
-            if path.name in required
-        ]
-        missing = sorted(required - {path.name for path in runtime})
-        candidates = {
-            path: kind
-            for path in partials
-            if (kind := _runtime_partial_kind(root, path)) is not None
-        }
-        if process.poll() is not None:
-            raise AssertionError("HF acquisition completed before partial barrier")
-        if candidates and missing:
-            return {
-                "partial_files": [str(path) for path in partials[:10]],
-                "partial_asset_candidates": [str(path) for path in candidates],
-                "partial_asset_kinds": {
-                    str(path): kind for path, kind in candidates.items()
-                },
-                "partial_asset_sizes": {
-                    str(path): sizes[path] for path in candidates
-                },
-                "process_live_at_barrier": process.poll() is None,
-                "runtime_complete_count": len(runtime),
-                "missing_runtime_finals": missing,
-            }
-        time.sleep(0.05)
-    process.kill()
-    raise AssertionError("HF partial barrier timed out")
-
-
-def wait_for_path(path: Path, process: subprocess.Popen[str]) -> dict[str, JsonValue]:
-    deadline = time.monotonic() + SIGNAL_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if path.exists():
-            return {"ready": path.read_text(encoding="utf-8")}
-        if process.poll() is not None:
-            raise AssertionError("signal driver exited before ready barrier")
-        time.sleep(0.05)
-    process.kill()
-    raise AssertionError(f"barrier timed out: {path}")
-
-
-def wait_for_decode_cpu(
+def wait_for_hf_partial(
+    root: Path,
     process: subprocess.Popen[str],
-    *,
-    marker: Path,
-    outdir: Path,
+    transfer_held: threading.Event,
 ) -> dict[str, JsonValue]:
-    deadline = time.monotonic() + SIGNAL_TIMEOUT_SECONDS
-    marker_ticks: int | None = None
-    while time.monotonic() < deadline:
+    if not transfer_held.wait(timeout=SIGNAL_TIMEOUT_SECONDS):
         if process.poll() is not None:
-            raise AssertionError("decode completed before real-decode barrier")
-        if marker.exists() and marker_ticks is None:
-            marker_ticks = _cpu_ticks(process.pid)
-        current_ticks = _cpu_ticks(process.pid)
-        finals_exist = _output_finals_exist(outdir)
-        if marker_ticks is not None and current_ticks > marker_ticks and not finals_exist:
-            return {
-                "real_decode_entered": str(marker),
-                "cpu_ticks_before": marker_ticks,
-                "cpu_ticks_after": current_ticks,
-                "output_finals_exist": finals_exist,
-            }
-        time.sleep(0.01)
-    process.kill()
-    raise AssertionError("real-decode CPU barrier timed out")
+            raise AssertionError("HF acquisition child exited before held-transfer barrier")
+        process.kill()
+        raise AssertionError("HF held-transfer barrier timed out")
 
-
-def _cpu_ticks(pid: int) -> int:
-    fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
-    return int(fields[13]) + int(fields[14])
+    required = {"encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"}
+    hf_roots = (root / "hf" / "hub", root / "hf" / "xet")
+    observed_files: list[tuple[Path, int]] = []
+    partials: list[Path] = []
+    sizes: dict[Path, int] = {}
+    for hf_root in hf_roots:
+        if not hf_root.exists():
+            continue
+        for path in hf_root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                continue
+            observed_files.append((path, size))
+            if size > 0:
+                partials.append(path)
+                sizes[path] = size
+    runtime = [path for path in partials if path.name in required]
+    missing = sorted(required - {path.name for path in runtime})
+    candidates = {
+        path: kind
+        for path in partials
+        if (kind := _runtime_partial_kind(root, path)) is not None
+    }
+    if process.poll() is not None:
+        raise AssertionError("HF acquisition child exited at held-transfer barrier")
+    if not candidates:
+        listing = ", ".join(
+            f"{path} ({size} bytes)" for path, size in observed_files
+        )
+        raise AssertionError(
+            f"HF held transfer has no runtime partial candidate; HF files: [{listing}]"
+        )
+    if not missing:
+        raise AssertionError("HF held transfer has no missing runtime final")
+    return {
+        "partial_files": [str(path) for path in partials[:10]],
+        "partial_asset_candidates": [str(path) for path in candidates],
+        "partial_asset_kinds": {str(path): kind for path, kind in candidates.items()},
+        "partial_asset_sizes": {str(path): sizes[path] for path in candidates},
+        "process_live_at_barrier": process.poll() is None,
+        "runtime_complete_count": len(runtime),
+        "missing_runtime_finals": missing,
+    }
 
 
 def _runtime_partial_kind(root: Path, path: Path) -> str | None:
@@ -271,10 +301,6 @@ def _runtime_partial_kind(root: Path, path: Path) -> str | None:
     if any(part in parts for part in ("chunk-cache", "chunks", "data", "staging")):
         return "xet_data_partial"
     return None
-
-
-def _output_finals_exist(outdir: Path) -> bool:
-    return any(outdir.glob("*.json")) or any(outdir.glob("*.txt"))
 
 
 def _is_live(pid: int) -> bool:

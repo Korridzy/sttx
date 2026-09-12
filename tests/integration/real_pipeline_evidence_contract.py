@@ -167,15 +167,12 @@ def _assert_cancellable_acquisition_barrier(
 
 
 def _assert_native_decode_barrier(barrier: Mapping[str, JsonValue]) -> None:
-    before = _number(barrier, "cpu_ticks_before")
-    after = _number(barrier, "cpu_ticks_after")
-    if after <= before:
-        raise EvidenceContractError("native decode barrier did not prove post-marker CPU work")
     if "real_decode_entered" not in barrier:
         raise EvidenceContractError("native decode barrier did not record real decode marker")
-    marker = _text(barrier, "real_decode_entered")
-    if not marker.endswith("real_decode_entered"):
+    if _text(barrier, "real_decode_entered") != "decode_entered":
         raise EvidenceContractError("native decode barrier did not record real decode marker")
+    if _text(barrier, "decode_returned_exists") != "false":
+        raise EvidenceContractError("native decode returned before the signal took effect")
     if _text(barrier, "output_finals_exist") != "false":
         raise EvidenceContractError("native decode barrier fired after final outputs existed")
 
