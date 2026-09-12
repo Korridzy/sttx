@@ -7,8 +7,9 @@ Historical failure context, implemented safeguards, and remaining evidence limit
 **Raised:** 2026-08-31, while fixing `token end lies outside its chunk`
 (`fix(asr): clamp frame-quantized token timings to their chunk`).
 
-**Status:** qualification mechanisms implemented; finite-fixture limitations and
-full release-mirror/hosted execution verification remain open.
+**Status** confirms that local qualification and local release mirror
+verification are complete. Finite fixture limitations, final F1 through F4
+verification, and hosted execution remain outstanding.
 
 ### Historical Failure
 
@@ -105,12 +106,13 @@ promoted. Failed rotations restore the old baseline and anchor together.
   the expected missing baseline; this was not a clean native gate verdict until
   C3. C1's scratch cache was cleaned before C2 reacquired assets, so this does not
   claim a warm C1/C2 cache-identity run. C2/C3 shared the later scratch cache.
-- Local workflow structure, adversarial shell decisions, and offline plain-wheel
-  origin/lifecycle checks have evidence. They are not full native installed-wheel
-  release-mirror F3 evidence. Final F1-F4 verification and an authorized actual
-  hosted PR/tag run have not yet been completed. Runner namespace availability,
-  hosted performance, artifact transport, and publication remain unverified by
-  hosted execution; no release or publication is claimed here.
+- Local workflow structure, adversarial shell decisions, and offline plain wheel
+  origin/lifecycle checks have evidence. Local verification, including the
+  release mirror, is complete. Final F1 through F4 verification and an
+  authorized hosted PR/tag run remain outstanding. Runner namespace availability,
+  hosted performance, artifact transport, and publication remain unverified
+  because hosted execution has not run. No release or publication is claimed
+  here.
 - Evidence writing is best effort at real filesystem boundaries: unsafe output
   aliases are rejected before writing, and setup/I/O failures can leave no
   artifact. Per-file upload requirements and final aggregation still fail

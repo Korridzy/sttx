@@ -388,9 +388,84 @@ chain `build -> qualify -> publish -> github-release`; there is no rebuild.
 OIDC `id-token: write` is confined to publish under the `pypi` environment, and
 `contents: write` to the GitHub release job with `GH_TOKEN` bound to the workflow
 token. Failed qualification blocks publication. These are implemented workflow
-contracts, not evidence of hosted execution: local bootstrap C1/C2/C3 and offline
-plain-wheel checks exist, but full release-mirror F3 and authorized hosted PR/tag
-validation remain pending. No tag or publication is part of local qualification.
+contracts, not evidence of hosted execution. Local verification is complete,
+including bootstrap C1/C2/C3 and the offline plain wheel release mirror. Final
+F1 through F4 verification and authorized hosted PR/tag execution remain
+outstanding. No tag or publication is part of local qualification.
+
+### Releasing from a validated branch
+
+This procedure records local validation. It does not provide hosted evidence.
+The committed baseline was produced locally on CPython 3.12.3. The PR
+`backend-compat` slow path reruns qualification on CPython 3.13, as
+`.github/workflows/ci.yml:89-93` specifies. Identity or behavior drift between
+interpreters fails the PR and requires a fresh local cycle. The hosted evidence
+contract also requires `unshare` to work on the runner.
+
+1. Run the local gate from the repository root before pushing. It matches the
+   todo 6 release mirror commands. Both `jq` checks must print `true`, and every
+   command must succeed.
+
+   ```bash
+   poetry run python -I -S -B scripts/backend_change_detector.py --base origin/main --head HEAD --root "$PWD" | jq -e '.first_introduction==true and .head_version==1 and .record_changed==true and .needs_qualification==true and .fingerprint_mismatch==false'
+   poetry run python -I -S -B scripts/backend_change_detector.py --base "$(git rev-parse HEAD)" --head "$(git rev-parse HEAD)" --root "$PWD" | jq -e '.needs_qualification==false and .fingerprint_mismatch==false and .first_introduction==false'
+   poetry run pytest -q -m "not integration"
+   poetry check
+   poetry run python -m compileall -q src tests
+   poetry build
+   poetry run pytest tests/test_backend_fingerprint.py -q -k "existing_source_changes and (model or audio or asr_events)"
+   BUILD_OUT=$(mktemp -d /tmp/sttx-build.XXXXXX)
+   RELEASE_TMP=$(mktemp -d /tmp/sttx-release.XXXXXX)
+   export WHEEL_VENV="$RELEASE_TMP/wheel-venv"
+   EVIDENCE="$RELEASE_TMP/evidence"
+   mkdir -p "$EVIDENCE"
+   test ! -e "$WHEEL_VENV"
+   poetry build --output "$BUILD_OUT"
+   wheels=("$BUILD_OUT"/*.whl); test "${#wheels[@]}" = 1
+   test -f "${wheels[0]}"
+   poetry run python -m venv "$WHEEL_VENV"
+   "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
+   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.2"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
+   "$WHEEL_VENV/bin/python" --version
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"
+   jq -e --arg venv "$WHEEL_VENV" --arg executable "$WHEEL_VENV/bin/python" --arg fingerprint "$(poetry run python -I -S -B scripts/compute_backend_fingerprint.py)" '.venv == $venv and .executable == $executable and .fingerprint == $fingerprint and .gate.verdict == "pass"' "$EVIDENCE/release-pipeline.json"
+   find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+   rm -rf "$BUILD_OUT" "$RELEASE_TMP" dist
+   git status --porcelain --untracked-files=no
+   git diff --quiet && git diff --cached --quiet
+   ```
+
+2. Push the validated branch.
+
+   ```bash
+   git push -u origin token-out-of-chunk
+   ```
+
+3. Open a PR from `token-out-of-chunk` against `main`. Because the base has no
+   contract, the PR `backend-compat` job takes the first introduction slow path
+   with real model downloads under a 60 minute timeout.
+
+4. Wait for `test (3.11|3.12|3.13)`, `backend-compat`, and the stable `checks`
+   job to succeed.
+
+5. Merge the PR after those jobs succeed.
+
+6. Tag the merge commit and push that tag. Replace `<merge-commit>` with the
+   merge commit SHA. The tag must equal `v$(poetry version --short)`. The
+   `v0.1.1` tag already exists on the remote and cannot be reused.
+
+   ```bash
+   git tag v0.1.2 <merge-commit> && git push origin v0.1.2
+   ```
+
+7. The tag starts `build -> qualify -> publish -> github-release`. The `publish`
+   job runs under the `pypi` environment with `id-token: write`. A failed
+   qualification blocks publication.
+
+8. PyPI never permits reusing a version number. A failed publish requires a new
+   patch version and a new tag.
 
 ## Attribution and licensing
 
