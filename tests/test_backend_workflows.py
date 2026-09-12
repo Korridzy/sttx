@@ -242,11 +242,11 @@ def test_release_qualification_boundaries() -> None:
     assert 'Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())' in install[6]
 
 
-@pytest.mark.parametrize("tag", ["v0.1.1", "v0.1.2", "0.1.1", "vv0.1.1"])
+@pytest.mark.parametrize("tag", ["v0.1.2", "v0.1.1", "0.1.1", "vv0.1.1"])
 def test_release_tag_shell(tag: str) -> None:
     script = steps("build", "release")["tag"]["run"]
-    result = shell('poetry() { printf "0.1.1\\n"; };\n' + str(script), {"GITHUB_REF_NAME": tag})
-    assert (result.returncode == 0) == (tag == "v0.1.1")
+    result = shell('poetry() { printf "0.1.2\\n"; };\n' + str(script), {"GITHUB_REF_NAME": tag})
+    assert (result.returncode == 0) == (tag == "v0.1.2")
 
 
 @pytest.mark.parametrize("failed", ["", *GATES, *UPLOADS, "venv", "executable", "fingerprint", "missing"])

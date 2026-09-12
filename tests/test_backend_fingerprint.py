@@ -60,7 +60,7 @@ def test_fingerprint_when_identity_inputs_change(tmp_path: Path, mutation: str, 
     replacements = {
         "order": ('"sherpa-onnx==1.13.6",\n    "sherpa-onnx-bin==1.13.6",',
                   '"sherpa-onnx-bin==1.13.6",\n    "sherpa-onnx==1.13.6",'),
-        "metadata": ('version = "0.1.1"', 'version = "9.9.9"'),
+        "metadata": ('version = "0.1.2"', 'version = "9.9.9"'),
         "dependency": ("numpy==2.4.6", "numpy==2.4.7"),
         "contract": (f"PROBE_VERSION: Final = {PROBE_VERSION}", f"PROBE_VERSION: Final = {PROBE_VERSION + 1}"),
     }
