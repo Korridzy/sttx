@@ -15,12 +15,12 @@ jobs:
       dist-id: ${{ steps.dist.outputs.artifact-id }}
     steps:
       - id: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
       - name: Install Poetry
         run: pipx install poetry==2.4.1
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - id: tag
@@ -30,7 +30,7 @@ jobs:
         name: Build distributions
         run: poetry build
       - id: dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist
           path: dist/
@@ -50,7 +50,7 @@ jobs:
       WHEEL_VENV: ${{ github.workspace }}/release-wheel-venv
     steps:
       - id: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
       - id: system
@@ -59,7 +59,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg strace
       - id: python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - id: poetry
@@ -71,7 +71,7 @@ jobs:
           python3 -I -S -B scripts/backend_change_detector.py --base "$GITHUB_SHA" --head "$GITHUB_SHA" --root "$GITHUB_WORKSPACE"
           python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
       - id: dist
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
@@ -97,35 +97,35 @@ jobs:
         run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"'
       - id: upload_candidate
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-candidate
           path: ${{ env.EVIDENCE }}/release-candidate.json
           if-no-files-found: error
       - id: upload_binding
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-binding
           path: ${{ env.EVIDENCE }}/release-binding.json
           if-no-files-found: error
       - id: upload_pipeline
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-pipeline
           path: ${{ env.EVIDENCE }}/release-pipeline.json
           if-no-files-found: error
       - id: upload_log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-log
           path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
           if-no-files-found: error
       - id: upload_cleanup
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-cleanup
           path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
@@ -164,14 +164,14 @@ jobs:
       id-token: write
     steps:
       - id: dist
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           artifact-ids: ${{ needs.qualify.outputs.dist-id }}
           path: dist/
           merge-multiple: true
       - id: publish
         name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
   github-release:
     name: GitHub release
     needs: [publish]
@@ -180,7 +180,7 @@ jobs:
       contents: write
     steps:
       - id: dist
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           artifact-ids: ${{ needs.publish.outputs.dist-id }}
           path: dist/

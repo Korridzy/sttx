@@ -21,6 +21,11 @@ FILES: Final = (
 )
 GATES: Final = ("qualification", "binding", "pipeline")
 UPLOADS: Final = tuple(f"upload_{name}" for name in ("candidate", "binding", "pipeline", "log", "cleanup"))
+CHECKOUT_ACTION: Final = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+SETUP_PYTHON_ACTION: Final = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
+UPLOAD_ACTION: Final = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+DOWNLOAD_ACTION: Final = "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0"
+PUBLISH_ACTION: Final = "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
 YamlValue = str | list["YamlValue"] | dict[str, "YamlValue"]
 
 
@@ -68,6 +73,7 @@ def test_backend_structure() -> None:
     items = steps()
     assert list(items) == ["checkout", "fetch", "detect", "fast", "system", "python", "poetry", "dependencies",
                            *GATES, *UPLOADS, "aggregate"]
+    assert items["checkout"]["uses"] == CHECKOUT_ACTION
     assert mapping(items["checkout"]["with"]) == {"ref": selected, "fetch-depth": "0"}
     assert backend["env"] == {"HEAD_SHA": selected,
                               "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.before }}",
@@ -75,6 +81,7 @@ def test_backend_structure() -> None:
     assert items["fast"]["if"] == "steps.detect.outputs.needs_qualification == 'false'"
     for name in ("system", "python", "poetry", "dependencies", *GATES):
         assert items[name]["if"] == SLOW
+    assert items["python"]["uses"] == SETUP_PYTHON_ACTION
     assert mapping(items["python"]["with"])["python-version"] == "3.13"
     assert items["poetry"]["run"] == "pipx install poetry==2.4.1"
     assert items["system"]["run"] == "sudo apt-get update\nsudo apt-get install -y --no-install-recommends ffmpeg strace\n"
@@ -92,7 +99,7 @@ def test_each_required_upload_is_independent() -> None:
     items = steps()
     for name, filename in zip(UPLOADS, FILES, strict=True):
         assert items[name]["if"] == ALWAYS
-        assert items[name]["uses"] == "actions/upload-artifact@v4"
+        assert items[name]["uses"] == UPLOAD_ACTION
         assert "continue-on-error" not in items[name]
         assert items[name]["with"] == {"name": f"backend-{name.removeprefix('upload_')}",
                                        "path": f"${{{{ env.EVIDENCE }}}}/{filename}", "if-no-files-found": "error"}
@@ -187,20 +194,21 @@ def test_release_chain_and_exact_artifact() -> None:
         assert "if" not in current and "continue-on-error" not in current
         assert steps(job, "release")["dist"]["with"] == {
             "artifact-ids": f"${{{{ needs.{parent}.outputs.dist-id }}}}", "path": "dist/", "merge-multiple": "true"}
-        assert steps(job, "release")["dist"]["uses"] == "actions/download-artifact@v5"
+        assert steps(job, "release")["dist"]["uses"] == DOWNLOAD_ACTION
     for job, origin in (("build", "steps.dist.outputs.artifact-id"), ("qualify", "needs.build.outputs.dist-id"),
                         ("publish", "needs.qualify.outputs.dist-id")):
         assert mapping(jobs[job])["outputs"] == {"dist-id": f"${{{{ {origin} }}}}"}
     for job in ("build", "qualify"):
         assert "permissions" not in mapping(jobs[job])
+        assert steps(job, "release")["checkout"]["uses"] == CHECKOUT_ACTION
         assert steps(job, "release")["checkout"]["with"] == {"ref": "${{ github.sha }}"}
     build = steps("build", "release")
     assert build["build"]["run"] == "poetry build"
-    assert build["dist"]["uses"] == "actions/upload-artifact@v4"
+    assert build["dist"]["uses"] == UPLOAD_ACTION
     assert build["dist"]["with"] == {"name": "dist", "path": "dist/", "if-no-files-found": "error"}
     assert mapping(jobs["publish"])["permissions"] == {"id-token": "write"}
     assert mapping(mapping(jobs["publish"])["environment"])["name"] == "pypi"
-    assert steps("publish", "release")["publish"]["uses"] == "pypa/gh-action-pypi-publish@release/v1"
+    assert steps("publish", "release")["publish"]["uses"] == PUBLISH_ACTION
     assert mapping(jobs["github-release"])["permissions"] == {"contents": "write"}
     github = steps("github-release", "release")["release"]
     assert github["env"] == {"GH_TOKEN": "${{ github.token }}"}
@@ -214,13 +222,14 @@ def test_release_qualification_boundaries() -> None:
     assert job["env"] == {"EVIDENCE": "${{ github.workspace }}/release-evidence",
                           "WHEEL_VENV": "${{ github.workspace }}/release-wheel-venv"}
     assert list(items) == ["checkout", "system", "python", "poetry", "detect", "dist", "install", *GATES, *UPLOADS, "aggregate"]
+    assert items["python"]["uses"] == SETUP_PYTHON_ACTION
     for name in ("system", "python", "poetry"):
         assert items[name].get("run") == steps()[name].get("run")
         assert items[name].get("with") == steps()[name].get("with")
     for name, filename in zip(UPLOADS, FILES, strict=True):
         output = f"release-{filename}" if filename.endswith(".json") and not filename.startswith("task-") else filename
         assert items[name]["if"] == "always()"
-        assert items[name]["uses"] == "actions/upload-artifact@v4"
+        assert items[name]["uses"] == UPLOAD_ACTION
         assert "continue-on-error" not in items[name]
         assert items[name]["with"] == {"name": f"release-{name.removeprefix('upload_')}",
                                        "path": f"${{{{ env.EVIDENCE }}}}/{output}", "if-no-files-found": "error"}

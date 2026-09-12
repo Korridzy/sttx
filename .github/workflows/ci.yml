@@ -21,17 +21,17 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install Poetry
         run: pipx install poetry==2.4.1
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -57,7 +57,7 @@ jobs:
       EVIDENCE: ${{ github.workspace }}/backend-evidence
     steps:
       - id: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -88,7 +88,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg strace
       - id: python
         if: steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - id: poetry
@@ -113,35 +113,35 @@ jobs:
         run: poetry run pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/pipeline.json"
       - id: upload_candidate
         if: always() && steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backend-candidate
           path: ${{ env.EVIDENCE }}/candidate.json
           if-no-files-found: error
       - id: upload_binding
         if: always() && steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backend-binding
           path: ${{ env.EVIDENCE }}/binding.json
           if-no-files-found: error
       - id: upload_pipeline
         if: always() && steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backend-pipeline
           path: ${{ env.EVIDENCE }}/pipeline.json
           if-no-files-found: error
       - id: upload_log
         if: always() && steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backend-log
           path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
           if-no-files-found: error
       - id: upload_cleanup
         if: always() && steps.detect.outputs.needs_qualification == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backend-cleanup
           path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
