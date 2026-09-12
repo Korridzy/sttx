@@ -20,6 +20,7 @@ from typing import Generic, NoReturn, Protocol, Self, TypeVar, assert_never
 import sherpa_onnx
 
 from sttx import __version__
+from sttx import backend_contract
 from sttx.asr import (
     FloatSamples,
     ProgressCallback,
@@ -63,6 +64,15 @@ SUCCESS: int = 0
 ENVIRONMENT_ERROR: int = 1
 USAGE_OR_RUNTIME_ERROR: int = 2
 SAMPLE_RATE: int = 16_000
+# Configured intent only: observed inert in this sherpa-onnx version, which
+# never split a run on it. Kept so the ceiling is declared rather than implied.
+VAD_MAX_SPEECH_SECONDS: int = 60
+# sherpa-onnx buffers a whole speech run before emitting it, and
+# max_speech_duration does not split one: a stretch without a min_silence pause
+# stays a single segment however long it runs. No capacity is therefore always
+# sufficient; this one covers the recordings measured so far, and anything
+# longer only costs a lossless resize notice on stderr.
+VAD_BUFFER_SECONDS: float = 240.0
 PROGRESS_BAR_WIDTH: int = 20
 LIVE_PROGRESS_TICK_SECONDS: float = 0.1
 LIVE_PROGRESS_RENDER_PREFIX: bytes = b"\x00sttx-live-progress-render\x00"
@@ -1022,7 +1032,10 @@ def _validate_input(path: Path) -> None:
 
 def _make_recognizer_from_bundle(
     bundle: ModelBundle,
+    *,
+    settings: backend_contract.RecognizerSettings | None = None,
 ) -> Recognizer[RecognitionStream, RecognitionResult]:
+    resolved_settings = backend_contract.RECOGNIZER_SETTINGS if settings is None else settings
     try:
         return _RecognizerAdapter(
             sherpa_onnx.OfflineRecognizer.from_transducer(
@@ -1030,12 +1043,7 @@ def _make_recognizer_from_bundle(
                 decoder=str(bundle.decoder),
                 joiner=str(bundle.joiner),
                 tokens=str(bundle.tokens),
-                num_threads=1,
-                sample_rate=SAMPLE_RATE,
-                feature_dim=80,
-                decoding_method="greedy_search",
-                provider="cpu",
-                model_type="nemo_transducer",
+                **resolved_settings,
             )
         )
     except (OSError, RuntimeError, ValueError) as error:
@@ -1044,26 +1052,22 @@ def _make_recognizer_from_bundle(
 
 def _make_vad_from_bundle(
     bundle: ModelBundle,
+    *,
+    settings: backend_contract.VadSettings | None = None,
 ) -> VoiceActivityDetector:
+    resolved_settings = backend_contract.VAD_SETTINGS if settings is None else settings
     try:
         config = sherpa_onnx.VadModelConfig(
             silero_vad=sherpa_onnx.SileroVadModelConfig(
                 model=str(bundle.silero),
-                threshold=0.5,
-                min_silence_duration=0.5,
-                min_speech_duration=0.25,
-                window_size=512,
-                max_speech_duration=60,
+                **resolved_settings["silero"],
             ),
-            sample_rate=SAMPLE_RATE,
-            num_threads=1,
-            provider="cpu",
-            debug=False,
+            **resolved_settings["model"],
         )
         return _VoiceActivityDetectorAdapter(
             sherpa_onnx.VoiceActivityDetector(
                 config,
-                buffer_size_in_seconds=60.0,
+                **resolved_settings["detector"],
             )
         )
     except (OSError, RuntimeError, ValueError) as error:

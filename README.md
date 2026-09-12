@@ -77,7 +77,7 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {tex
   `elapsed_seconds` fields plus event-specific data such as `stage`,
   `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
   for machine-consumable pipeline telemetry.
-- `--version` — print `sttx 0.1.1` and exit.
+- `--version` — print `sttx 0.1.2` and exit.
 
 There is no language option: the model reports a language when available and
 the JSON writer falls back to `"auto"`.
@@ -111,17 +111,24 @@ removed during success, failure, and signal cleanup.
 
 ## Model acquisition and cache
 
-Without `--model-dir`, the first run resolves the floating repository
-`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` and downloads its
-missing Parakeet assets into the Hugging Face cache. The Silero VAD asset is
-stored in the local `sttx` cache. Model revision and download size are not
-fixed promises and may change over time.
+Without `--model-dir`, sttx resolves
+`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` at the pinned revision
+`2bda32ec70b097a55adaa07d9a7173915b43cc78`. Both local-only lookup and network
+acquisition request that exact revision, not the repository's current head.
+Missing Parakeet assets are downloaded into the Hugging Face cache.
 
-Warm-cache behavior is sticky and local-only first: an existing complete local
-snapshot is used without a refresh request. Network acquisition is attempted
-only when the local snapshot is missing or incomplete. The Silero VAD file is
-also reused from its local `sttx` cache once present; it is not refreshed on a
-normal warm run.
+Acquisition is local-first: a complete local snapshot of the pinned revision
+is reused without a refresh request. Network acquisition is attempted only
+when that snapshot is missing or incomplete. Runtime checks require readable,
+nonempty Parakeet assets; the large model files are not rehashed on every run.
+Qualification separately checks their declared SHA-256 identities.
+
+Silero VAD is stored at `~/.cache/sttx/silero_vad.onnx`. Its SHA-256 is checked
+before reuse. A missing, unreadable, empty, or hash-mismatched cache entry
+triggers reacquisition. Downloaded bytes are staged and verified against the
+[backend contract](src/sttx/backend_contract.py) before atomic replacement.
+A bad download fails rather than replacing an existing final file; its staging
+file is cleaned up. A valid warm Silero cache needs no download.
 
 For an offline run, `--model-dir` must point to a flat directory containing the
 complete five-file bundle below. These exact filenames are required and each
@@ -134,6 +141,12 @@ joiner.int8.onnx
 tokens.txt
 silero_vad.onnx
 ```
+
+Explicit bundles remain zero-network and use the same filename, readability,
+and nonempty checks as before. They are not subjected to the default model's
+revision or checksum policy and do not participate in automatic cache repair.
+Arbitrary offline bundles and explicit dependency overrides are outside the
+qualification guarantees.
 
 ## Output files
 
@@ -180,12 +193,279 @@ From a source checkout, Poetry creates the project's virtual environment in
 poetry install
 poetry env info --path
 poetry check
-poetry run pytest
+poetry run basedpyright
+poetry run pytest -q -m "not integration"
 poetry run python -m compileall -q src tests
 poetry run sttx --help
 poetry run sttx --version
 poetry build
 ```
+
+The offline suite uses fakes for native inference and does not download models.
+An unfiltered `poetry run pytest` also runs the three real integration gates;
+these require native packages, models/network, `ffmpeg`, `strace`, and working
+Linux namespace support. Keep their evidence and build outputs in scratch
+directories, not tracked fixtures. `poetry.lock` remains ignored local state.
+The [repository contract](tests/test_repo_contract.py) requires the approved
+qualification sources, tests, scripts, baseline JSON, and this gap history;
+the [packaging contract](tests/test_packaging.py) still requires an exact pure
+wheel inventory and exact dependency metadata. Models, media, run evidence,
+wheels, caches, and lockfiles are not repository deliverables.
+
+### Backend qualification identity
+
+Normal fresh installations resolve the four exact direct runtime pins in
+`pyproject.toml`: `sherpa-onnx==1.13.6`, `sherpa-onnx-bin==1.13.6`,
+`huggingface-hub==1.29.0`, and `numpy==2.4.6`. This is not a lock of every
+transitive dependency or a promise of identical numerics on every CPU.
+
+The qualification fingerprint includes sorted direct dependencies, the backend
+contract payload (settings, asset and independently pinned fixture identities,
+timing constants, probe version, and approved-run anchor), and the complete
+bytes of exactly these 26 required sources:
+
+```text
+scripts/compute_backend_fingerprint.py
+scripts/backend_change_detector.py
+tests/conftest.py
+src/sttx/asr.py
+src/sttx/cli.py
+src/sttx/model.py
+src/sttx/audio.py
+src/sttx/asr_events.py
+tests/integration/timing_lattice.py
+tests/integration/test_timing_qualification.py
+tests/integration/qualification_schema.py
+tests/integration/qualification_validation.py
+tests/integration/qualification_evaluation.py
+tests/integration/qualification_recording.py
+tests/integration/qualification_probes.py
+tests/integration/test_binding_contract.py
+tests/integration/test_real_pipeline.py
+tests/integration/real_pipeline_artifacts.py
+tests/integration/real_pipeline_checks.py
+tests/integration/real_pipeline_evidence_contract.py
+tests/integration/real_pipeline_media.py
+tests/integration/real_pipeline_observability.py
+tests/integration/real_pipeline_runner.py
+tests/integration/real_pipeline_signal_process.py
+tests/integration/real_pipeline_signals.py
+tests/integration/real_pipeline_trace.py
+```
+
+Any bound-byte change, including comments, invalidates the old fingerprint.
+All 26 sources must be present for qualification and release. New executable
+qualification logic must join the binding before use, not escape into an
+unhashed helper. Ownership is deliberate:
+
+| Owner | Responsibility |
+| --- | --- |
+| `scripts/compute_backend_fingerprint.py` | Read-only checker CLI and promotion policy |
+| `scripts/backend_change_detector.py` | Base/head AST and diff decisions, without executing base code |
+| `tests/integration/test_timing_qualification.py` | Native gate lifecycle and failure envelopes |
+| `qualification_schema.py`, `qualification_validation.py`, `qualification_evaluation.py` | Typed serialization, parsing/validation, and pure comparison respectively |
+| `qualification_recording.py`, `qualification_probes.py` | Passive production recording and real probe collection respectively |
+| `src/sttx/model.py`, `src/sttx/audio.py`, `src/sttx/asr_events.py` | Asset acquisition and checksums, ffmpeg normalization of the observed samples, and the activity-event union the probes consume |
+| `tests/integration/test_binding_contract.py`, `test_real_pipeline.py`, `real_pipeline_*.py` | Native binding and real pipeline gates, their fixtures, checks, and evidence |
+| `tests/conftest.py` | Pytest options and atomic evidence writer |
+| `tests/backend_qualification_helpers.py` | Offline synthetic fixtures only; never a checker/gate runtime import |
+
+Bare `qualification_*.py` names refer to files under `tests/integration/`.
+The signed observation payload has three separate collections: raw lattice
+`runs`, VAD/chunk-level `production_runs`, and final `production_transcripts`.
+Actual production builders and `transcribe()` supply nonempty speech and
+multichunk coverage. This finite fixture and its timing tolerances are an
+acceptance envelope, not proof against every numerical or transcription change.
+See [KNOWN-GAPS.md](KNOWN-GAPS.md) for historical context and residual limits.
+
+Read-only checks from the repository root:
+
+```bash
+poetry run python scripts/compute_backend_fingerprint.py --help
+poetry run python scripts/compute_backend_fingerprint.py
+poetry run python scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
+```
+
+Print mode emits an identity, not a qualification verdict. `--check` validates
+the baseline, signature/anchor, provenance, and current source identity; it does
+not run inference or certify a clean Git worktree. Neither mode writes a record.
+
+### Qualifying a backend update locally
+
+Complete and review all contract, dependency, and bound-source changes before
+collecting candidates. A changed bound probe source requires an increasing
+`PROBE_VERSION` and a changed qualified record. Preserve the previous baseline
+and anchor together before changing either. Keep C1/C2/C3 in distinct files in
+one persistent local package environment; CI candidates are diagnostic only and
+must never be promoted directly.
+
+1. Allocate a fresh evidence directory, for example
+   `QUALIFICATION_DIR=$(mktemp -d /tmp/sttx-qualification.XXXXXX)`. Measure C1
+   against the previous baseline and anchor with the command below. Keep C1
+   unchanged, even if the final aggregate assertion is nonzero. Inspect the
+   complete candidate, not merely that exit status: every candidate must match
+   the current contract. For routine updates C1 must be comparable with empty
+   integrity diagnostics. Only reviewed stale fingerprint, probe-version,
+   model-repo/revision/assets, dependencies, or quantum identity diagnostics are
+   eligible; verify each delta against the intended change.
+
+   ```bash
+   poetry run pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$QUALIFICATION_DIR/C1.json"
+   ```
+
+2. Review all behavioral differences. Routine promotion requires empty behavior
+   diagnostics; accepting a known difference is a deliberate maintainer decision
+   using `--accept-behavior-drift`, with the reason recorded in review. Never use
+   it to bypass invalid observations, missing coverage, fixture/platform mismatch,
+   integrity failures, or unknown diagnostic codes.
+
+3. Rotate `QUALIFIED_RUNS_SHA256` to C1's signed-payload signature and rerun the
+   same gate into `"$QUALIFICATION_DIR/C2.json"`. C2 must have the current
+   fingerprint and anchor and exactly the same canonical three-collection
+   payload and signature as C1. Only the permitted anchor-transition diagnostic
+   may be added to the reviewed identity diagnostics. **Stop on instability.**
+   Run the read-only promotion check before writing any baseline:
+
+   ```bash
+   poetry run pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$QUALIFICATION_DIR/C2.json"
+   poetry run python scripts/compute_backend_fingerprint.py --check-promotion "$QUALIFICATION_DIR/C1.json" "$QUALIFICATION_DIR/C2.json"
+   ```
+
+4. After checker success, promote C2's observations and identity into
+   `tests/integration/qualified_backend.json` with `record_kind=qualified_backend`.
+   Replace its top-level `baseline_comparison` with C1's comparison and add
+   `promotion={previous_fingerprint,previous_anchor,comparison_to_previous,decision}`.
+   The provenance comparison must equal the top-level comparison. Use `routine`
+   or `accepted_behavior` as appropriate; preserve the actual previous identity.
+   The checker does not perform this edit for you.
+
+5. Run `--check tests/integration/qualified_backend.json`, then the native gate
+   again into `"$QUALIFICATION_DIR/C3.json"`. C3 must pass with empty diagnostics.
+   Land the reviewed baseline and anchor together, never an intermediate state.
+   On any failed rotation, restore the saved baseline/anchor pair and retain
+   candidate evidence for diagnosis. Any subsequent bound-source edit requires
+   reviewed regeneration and the full sequence again.
+
+   ```bash
+   poetry run python scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
+   poetry run pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$QUALIFICATION_DIR/C3.json"
+   ```
+
+Bootstrap is only for a genuinely absent baseline: C1/C2 may report only
+`baseline.missing`, with otherwise valid observations. Use `--bootstrap` on the
+pair check, then `decision=bootstrap` with null previous fingerprint/anchor.
+It is incompatible with `--accept-behavior-drift` and refuses an existing
+baseline; deleting a baseline is not an upgrade bypass. Failure envelopes are
+never promotable. Unsafe output aliases or filesystem failures can prevent
+artifact creation and still fail the gate.
+
+### CI, dependency updates, and releases
+
+The [CI workflow](.github/workflows/ci.yml) retains the Python 3.11-3.13 offline
+matrix. On unrelated PRs, the backend job explicitly succeeds without model
+downloads, native gates, or artifact uploads. The detector requires qualification
+when the fingerprint mismatches the committed baseline or the record changed;
+metadata-only `pyproject.toml` edits are not automatically expensive. Missing
+base history follows a strict first-introduction policy, not silent fast-pass.
+
+The slow path runs qualification, binding, and the full pipeline separately,
+retains each outcome, uploads every required evidence file individually, and
+fails the aggregate on any failed/skipped gate, missing upload, or stale
+baseline. The stable `checks` job requires both the matrix and backend job.
+On fresh jobs, qualification acquires an ambient bundle, binding reuses it, and
+the full pipeline acquires an independently isolated cold bundle with real
+signal/cache checks. No Actions model cache persists across jobs or runs.
+
+[Dependabot](.github/dependabot.yml) proposes weekly grouped speech-backend
+updates. There is no auto-merge, automatic baseline commit, or auto-promotion.
+
+An authorized `v*` tag starts the [release workflow](.github/workflows/release.yml).
+The tag must match the package version. Build runs once; qualification downloads
+that exact artifact ID and installs its wheel into a fresh non-editable venv,
+proves import origin, then runs all three native gates before publication.
+Publish and GitHub release download that same artifact through the dependency
+chain `build -> qualify -> publish -> github-release`; there is no rebuild.
+OIDC `id-token: write` is confined to publish under the `pypi` environment, and
+`contents: write` to the GitHub release job with `GH_TOKEN` bound to the workflow
+token. Failed qualification blocks publication. These are implemented workflow
+contracts, not evidence of hosted execution. Local verification is complete,
+including bootstrap C1/C2/C3 and the offline plain wheel release mirror. Final
+F1 through F4 verification and authorized hosted PR/tag execution remain
+outstanding. No tag or publication is part of local qualification.
+
+### Releasing from a validated branch
+
+This procedure records local validation. It does not provide hosted evidence.
+The committed baseline was produced locally on CPython 3.12.3. The PR
+`backend-compat` slow path reruns qualification on CPython 3.13, as
+`.github/workflows/ci.yml:89-93` specifies. Identity or behavior drift between
+interpreters fails the PR and requires a fresh local cycle. The hosted evidence
+contract also requires `unshare` to work on the runner.
+
+1. Run the local gate from the repository root before pushing. It matches the
+   todo 6 release mirror commands. Both `jq` checks must print `true`, and every
+   command must succeed.
+
+   ```bash
+   poetry run python -I -S -B scripts/backend_change_detector.py --base origin/main --head HEAD --root "$PWD" | jq -e '.first_introduction==true and .head_version==1 and .record_changed==true and .needs_qualification==true and .fingerprint_mismatch==false'
+   poetry run python -I -S -B scripts/backend_change_detector.py --base "$(git rev-parse HEAD)" --head "$(git rev-parse HEAD)" --root "$PWD" | jq -e '.needs_qualification==false and .fingerprint_mismatch==false and .first_introduction==false'
+   poetry run pytest -q -m "not integration"
+   poetry check
+   poetry run python -m compileall -q src tests
+   poetry build
+   poetry run pytest tests/test_backend_fingerprint.py -q -k "existing_source_changes and (model or audio or asr_events)"
+   BUILD_OUT=$(mktemp -d /tmp/sttx-build.XXXXXX)
+   RELEASE_TMP=$(mktemp -d /tmp/sttx-release.XXXXXX)
+   export WHEEL_VENV="$RELEASE_TMP/wheel-venv"
+   EVIDENCE="$RELEASE_TMP/evidence"
+   mkdir -p "$EVIDENCE"
+   test ! -e "$WHEEL_VENV"
+   poetry build --output "$BUILD_OUT"
+   wheels=("$BUILD_OUT"/*.whl); test "${#wheels[@]}" = 1
+   test -f "${wheels[0]}"
+   poetry run python -m venv "$WHEEL_VENV"
+   "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
+   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.2"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
+   "$WHEEL_VENV/bin/python" --version
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"
+   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"
+   jq -e --arg venv "$WHEEL_VENV" --arg executable "$WHEEL_VENV/bin/python" --arg fingerprint "$(poetry run python -I -S -B scripts/compute_backend_fingerprint.py)" '.venv == $venv and .executable == $executable and .fingerprint == $fingerprint and .gate.verdict == "pass"' "$EVIDENCE/release-pipeline.json"
+   find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+   rm -rf "$BUILD_OUT" "$RELEASE_TMP" dist
+   git status --porcelain --untracked-files=no
+   git diff --quiet && git diff --cached --quiet
+   ```
+
+2. Push the validated branch.
+
+   ```bash
+   git push -u origin token-out-of-chunk
+   ```
+
+3. Open a PR from `token-out-of-chunk` against `main`. Because the base has no
+   contract, the PR `backend-compat` job takes the first introduction slow path
+   with real model downloads under a 60 minute timeout.
+
+4. Wait for `test (3.11|3.12|3.13)`, `backend-compat`, and the stable `checks`
+   job to succeed.
+
+5. Merge the PR after those jobs succeed.
+
+6. Tag the merge commit and push that tag. Replace `<merge-commit>` with the
+   merge commit SHA. The tag must equal `v$(poetry version --short)`. The
+   `v0.1.1` tag already exists on the remote and cannot be reused.
+
+   ```bash
+   git tag v0.1.2 <merge-commit> && git push origin v0.1.2
+   ```
+
+7. The tag starts `build -> qualify -> publish -> github-release`. The `publish`
+   job runs under the `pypi` environment with `id-token: write`. A failed
+   qualification blocks publication.
+
+8. PyPI never permits reusing a version number. A failed publish requires a new
+   patch version and a new tag.
 
 ## Attribution and licensing
 

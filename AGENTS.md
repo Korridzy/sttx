@@ -72,11 +72,14 @@ construction → `transcribe` → `write_outputs`.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
-- Do not track `.github/`, deploy/infra trees, `doc/`, model/media binaries,
-  wheel artifacts, caches, generated transcriptions, or `poetry.lock`; the
-  repository contract intentionally rejects them.
-- Do not add CI workflow scaffolding without changing the repository contract;
-  tracked `.github/` paths are currently forbidden.
+- Do not track deploy/infra trees, `doc/`, model/media binaries, wheel artifacts,
+  caches, generated transcriptions, or `poetry.lock`; the repository contract
+  intentionally rejects them. The repository contract requires tracking
+  `.github/dependabot.yml`, `.github/workflows/ci.yml`, and
+  `.github/workflows/release.yml`; other `.github/` scaffolding needs a
+  deliberate contract change.
+- Do not add CI workflow scaffolding beyond the required `.github/` files without
+  a deliberate repository contract change.
 - Do not add a language option. Language comes from the model and falls back to `auto`.
 - Do not acquire models before input and output validation succeeds.
 - Do not weaken exact model filenames, warm-cache local-first behavior, output

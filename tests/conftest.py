@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Mapping
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TypeAlias
 
@@ -14,13 +15,15 @@ JsonValue: TypeAlias = (
     | int
     | float
     | str
-    | list["JsonValue"]
+    | Sequence["JsonValue"]
     | Mapping[str, "JsonValue"]
 )
 IdentityWriter: TypeAlias = Callable[[Mapping[str, JsonValue]], None]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--qualification-output", type=Path, default=None,
+                     help="write qualification candidate or failure evidence to this JSON path")
     parser.addoption(
         "--identity-output",
         type=Path,
@@ -52,13 +55,21 @@ def write_identity_json(identity_output: Path | None) -> IdentityWriter:
     def write(payload: Mapping[str, JsonValue]) -> None:
         if identity_output is None:
             return
-        identity_output.parent.mkdir(parents=True, exist_ok=True)
-        staging = identity_output.with_name(f".{identity_output.name}.tmp")
-        with staging.open("w", encoding="utf-8") as stream:
-            json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(staging, identity_output)
+        write_json(identity_output, payload)
 
     return write
+
+
+def write_json(path: Path, payload: Mapping[str, JsonValue]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    staging = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+            _ = stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, path)
+    finally:
+        staging.unlink(missing_ok=True)

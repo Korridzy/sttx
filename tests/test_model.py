@@ -25,11 +25,13 @@ def test_complete_model_dir_is_zero_network(tmp_path: Path) -> None:
         bundle_dir,
         _snapshot_download=forbidden_snapshot,
         _silero_downloader=forbidden_silero,
+        _silero_expected_sha256="explicit-bundles-do-not-use-hashes",
     )
 
     # Then: exact local paths are returned without consulting either seam.
     assert tuple(path.name for path in bundle_paths(bundle)) == ALL_NAMES
     assert all(path.parent == bundle_dir for path in bundle_paths(bundle))
+    assert bundle.source == "explicit"
 
 
 def test_each_missing_bundle_file_is_environment_error(tmp_path: Path) -> None:

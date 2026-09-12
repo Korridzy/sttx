@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import os
+import hashlib
 import multiprocessing
+import os
 import queue
+import secrets
 import shutil
+import signal
 import tempfile
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from multiprocessing.queues import Queue
 from pathlib import Path
+from types import FrameType
 from typing import Final, Literal, Protocol, TypeAlias, assert_never
 
 from huggingface_hub import snapshot_download
@@ -19,19 +23,17 @@ from huggingface_hub.errors import (
     LocalEntryNotFoundError,
 )
 
-PARAKEET_REPO_ID: Final = (
-    "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
-)
-PARAKEET_FILENAMES: Final = (
-    "encoder.int8.onnx",
-    "decoder.int8.onnx",
-    "joiner.int8.onnx",
-    "tokens.txt",
-)
-SILERO_FILENAME: Final = "silero_vad.onnx"
-SILERO_URL: Final = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-    "silero_vad.onnx"
+# Changing this model can change the encoder frame quantum that
+# sttx.asr.ENCODER_FRAME assumes. The check against the real binding lives in
+# tests/integration/test_binding_contract.py, which is integration-marked and
+# therefore skipped by CI, so verify it locally when swapping models.
+from .backend_contract import (
+    PARAKEET_REPO_ID as PARAKEET_REPO_ID,
+    PARAKEET_REVISION as PARAKEET_REVISION,
+    PARAKEET_FILENAMES as PARAKEET_FILENAMES,
+    SILERO_FILENAME as SILERO_FILENAME,
+    SILERO_SHA256 as SILERO_SHA256,
+    SILERO_URL as SILERO_URL,
 )
 DOWNLOAD_TIMEOUT_SECONDS: Final = 60.0
 
@@ -41,6 +43,7 @@ class SnapshotDownloader(Protocol):
         self,
         *,
         repo_id: str,
+        revision: str,
         allow_patterns: list[str],
         local_files_only: bool,
         cache_dir: Path | None,
@@ -80,12 +83,18 @@ class ModelBundle:
     source: ModelSource = "unknown"
 
 
+def _default_silero_path() -> Path:
+    return Path.home() / ".cache" / "sttx" / SILERO_FILENAME
+
+
 def resolve_bundle(
     model_dir: Path | None = None,
     *,
     _snapshot_download: SnapshotDownloader | None = None,
     _silero_cache_path: Path | None = None,
     _silero_downloader: SileroDownloader | None = None,
+    _silero_expected_sha256: str = SILERO_SHA256,
+    _staging_token: str | None = None,
 ) -> ModelBundle:
     if model_dir is not None:
         return replace(
@@ -99,6 +108,7 @@ def resolve_bundle(
         local_snapshot = Path(
             download_snapshot(
                 repo_id=PARAKEET_REPO_ID,
+                revision=PARAKEET_REVISION,
                 allow_patterns=list(PARAKEET_FILENAMES),
                 local_files_only=True,
                 cache_dir=cache_dir,
@@ -115,6 +125,7 @@ def resolve_bundle(
             online_snapshot = Path(
                 download_snapshot(
                     repo_id=PARAKEET_REPO_ID,
+                    revision=PARAKEET_REVISION,
                     allow_patterns=list(PARAKEET_FILENAMES),
                     local_files_only=False,
                     cache_dir=cache_dir,
@@ -128,15 +139,12 @@ def resolve_bundle(
         parakeet = _bundle_from_directory(online_snapshot, include_silero=False)
         parakeet_source = "download"
 
-    silero_path = _silero_cache_path or (
-        Path.home() / ".cache" / "sttx" / SILERO_FILENAME
-    )
-    silero_source: ModelSource = (
-        "cache" if _is_readable_asset(silero_path) else "download"
-    )
-    silero = _resolve_silero(
+    silero_path = _silero_cache_path or _default_silero_path()
+    silero, silero_source = _resolve_silero(
         silero_path,
         _silero_downloader or _download_silero,
+        _silero_expected_sha256,
+        staging_token=_staging_token,
     )
     source: ModelSource = (
         parakeet_source
@@ -146,14 +154,53 @@ def resolve_bundle(
     return replace(parakeet, silero=silero, source=source)
 
 
-def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
+def _make_worker_signal_handler() -> Callable[[int, FrameType | None], None]:
+    latched = False
+
+    def exit_on_signal(signum: int, frame: FrameType | None) -> None:
+        nonlocal latched
+        del frame
+        if latched:
+            return
+        latched = True
+        raise SystemExit(128 + signum)
+
+    return exit_on_signal
+
+
+def _resolve_bundle_worker(messages: Queue[BundleMessage], token: str) -> None:
+    handler = _make_worker_signal_handler()
+    _ = signal.signal(signal.SIGTERM, handler)
+    _ = signal.signal(signal.SIGINT, handler)
+    try:
+        bundle = resolve_bundle(_staging_token=token)
+    except ModelEnvironmentError as error:
+        messages.put(("error", str(error)))
+        return
+    paths: BundleWire = (
+        str(bundle.encoder),
+        str(bundle.decoder),
+        str(bundle.joiner),
+        str(bundle.tokens),
+        str(bundle.silero),
+        bundle.source,
+    )
+    messages.put(("ok", paths))
+
+
+def resolve_bundle_cancellable(
+    model_dir: Path | None = None,
+    *,
+    _worker: Callable[[Queue[BundleMessage], str], None] = _resolve_bundle_worker,
+) -> ModelBundle:
     if model_dir is not None:
         return resolve_bundle(model_dir)
     context = multiprocessing.get_context("spawn")
     messages: Queue[BundleMessage] = context.Queue()
-    process = context.Process(target=_resolve_bundle_worker, args=(messages,))
-    process.start()
+    token = secrets.token_hex(8)
+    process = context.Process(target=_worker, args=(messages, token))
     try:
+        process.start()
         while process.is_alive():
             try:
                 return _bundle_from_message(messages.get(timeout=0.1))
@@ -167,30 +214,32 @@ def resolve_bundle_cancellable(model_dir: Path | None = None) -> ModelBundle:
                 reason=f"model acquisition process exited {process.exitcode}",
             ) from error
     finally:
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=5)
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=5)
-        messages.close()
-
-
-def _resolve_bundle_worker(messages: Queue[BundleMessage]) -> None:
-    try:
-        bundle = resolve_bundle()
-    except ModelEnvironmentError as error:
-        messages.put(("error", str(error)))
-        return
-    paths: BundleWire = (
-        str(bundle.encoder),
-        str(bundle.decoder),
-        str(bundle.joiner),
-        str(bundle.tokens),
-        str(bundle.silero),
-        bundle.source,
-    )
-    messages.put(("ok", paths))
+        try:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+            silero_path = _default_silero_path()
+            # A cleanup failure replaces active cancellation, so the CLI reports
+            # ENVIRONMENT_ERROR instead of 128 + signum. Incomplete cleanup must
+            # be visible rather than reported as a clean cancellation.
+            if process.is_alive():
+                raise ModelEnvironmentError(
+                    path=silero_path,
+                    reason="Silero staging cleanup is incomplete after SIGKILL",
+                )
+            try:
+                for staging in silero_path.parent.glob(f".{SILERO_FILENAME}.{token}.*.tmp"):
+                    _ = staging.unlink()
+            except OSError as error:
+                raise ModelEnvironmentError(
+                    path=silero_path,
+                    reason=f"cannot complete Silero staging cleanup: {error}",
+                ) from error
+        finally:
+            messages.close()
 
 
 def _bundle_from_message(message: BundleMessage) -> ModelBundle:
@@ -213,12 +262,14 @@ def _bundle_from_message(message: BundleMessage) -> ModelBundle:
 def _download_snapshot(
     *,
     repo_id: str,
+    revision: str,
     allow_patterns: list[str],
     local_files_only: bool,
     cache_dir: Path | None,
 ) -> str:
     result = snapshot_download(
         repo_id=repo_id,
+        revision=revision,
         allow_patterns=allow_patterns,
         local_files_only=local_files_only,
         cache_dir=cache_dir,
@@ -271,17 +322,34 @@ def _is_readable_asset(path: Path) -> bool:
         return False
 
 
+def _silero_matches(path: Path, expected_sha256: str) -> bool:
+    if not _is_readable_asset(path):
+        return False
+    try:
+        with path.open("rb") as asset:
+            return hashlib.file_digest(asset, "sha256").hexdigest() == expected_sha256
+    except OSError:
+        return False
+
+
 def _resolve_silero(
     final_path: Path,
     downloader: SileroDownloader,
-) -> Path:
-    if _is_readable_asset(final_path):
-        return _require_asset(final_path)
+    expected_sha256: str,
+    *,
+    staging_token: str | None = None,
+) -> tuple[Path, Literal["cache", "download"]]:
+    if _silero_matches(final_path, expected_sha256):
+        return final_path, "cache"
 
     try:
         final_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, raw_staging = tempfile.mkstemp(
-            prefix=f".{final_path.name}.",
+            prefix=(
+                f".{final_path.name}.{staging_token}."
+                if staging_token is not None
+                else f".{final_path.name}."
+            ),
             suffix=".tmp",
             dir=final_path.parent,
         )
@@ -299,8 +367,13 @@ def _resolve_silero(
             staged_file.flush()
             os.fsync(staged_file.fileno())
         _require_asset(staging)
+        if not _silero_matches(staging, expected_sha256):
+            raise ModelEnvironmentError(
+                path=staging,
+                reason=f"Silero SHA-256 mismatch: expected {expected_sha256}",
+            )
         os.replace(staging, final_path)
-        return _require_asset(final_path)
+        return final_path, "download"
     except OSError as error:
         raise ModelEnvironmentError(
             path=final_path,

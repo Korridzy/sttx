@@ -6,18 +6,22 @@ import shutil
 import subprocess
 import tomllib
 import zipfile
+from collections.abc import Sequence
 from email.parser import Parser
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_WHEEL = "sttx-0.1.1-py3-none-any.whl"
-DIST_INFO = "sttx-0.1.1.dist-info"
+EXPECTED_WHEEL = "sttx-0.1.2-py3-none-any.whl"
+DIST_INFO = "sttx-0.1.2.dist-info"
 EXPECTED_SOURCES = {
     "sttx/__init__.py",
     "sttx/asr.py",
     "sttx/asr_events.py",
     "sttx/audio.py",
+    "sttx/backend_contract.py",
     "sttx/cli.py",
     "sttx/model.py",
     "sttx/output.py",
@@ -53,6 +57,31 @@ FORBIDDEN_ASSET_SUFFIXES = {
 }
 
 
+def assert_runtime_pins(requirements: Sequence[str]) -> None:
+    assert sorted(
+        requirement.replace(" ", "").replace("(", "").replace(")", "")
+        for requirement in requirements
+    ) == [
+        "huggingface-hub==1.29.0",
+        "numpy==2.4.6",
+        "sherpa-onnx-bin==1.13.6",
+        "sherpa-onnx==1.13.6",
+    ]
+
+
+@pytest.mark.parametrize("requirement", ["numpy", "numpy==2.5.2", "numpy>=2.4.6"])
+def test_runtime_pins_reject_mismatched_requirement(requirement: str) -> None:
+    requirements = [
+        "huggingface-hub==1.29.0",
+        requirement,
+        "sherpa-onnx==1.13.6",
+        "sherpa-onnx-bin==1.13.6",
+    ]
+
+    with pytest.raises(AssertionError):
+        assert_runtime_pins(requirements)
+
+
 def test_pep_621_metadata_defines_supported_console_distribution() -> None:
     # Given: the project metadata used by Poetry.
     pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
@@ -63,9 +92,10 @@ def test_pep_621_metadata_defines_supported_console_distribution() -> None:
 
     # Then: the supported distribution contract is explicit and version bounded.
     assert project["name"] == "sttx"
-    assert project["version"] == "0.1.1"
+    assert project["version"] == "0.1.2"
     assert project["requires-python"] == ">=3.11,<3.14"
     assert scripts == {"sttx": "sttx.cli:main"}
+    assert_runtime_pins(project["dependencies"])
 
 
 def test_poetry_lockfile_is_local_ignored_state() -> None:
@@ -167,16 +197,11 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert wheel_metadata["Root-Is-Purelib"] == "true"
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
     assert package_metadata["Name"] == "sttx"
-    assert package_metadata["Version"] == "0.1.1"
+    assert package_metadata["Version"] == "0.1.2"
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
     assert package_metadata["License-Expression"] == "GPL-3.0-only"
     assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
-    assert sorted(package_metadata.get_all("Requires-Dist") or []) == [
-        "huggingface-hub",
-        "numpy",
-        "sherpa-onnx",
-        "sherpa-onnx-bin",
-    ]
+    assert_runtime_pins(package_metadata.get_all("Requires-Dist") or [])
     assert entry_points["console_scripts"]["sttx"] == "sttx.cli:main"
 
 

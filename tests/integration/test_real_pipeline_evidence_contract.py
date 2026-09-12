@@ -1,14 +1,189 @@
+# noqa: SIZE_OK because evidence scenarios share one canonical valid payload
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+from collections.abc import Mapping
 
 import pytest
 
-from .real_pipeline_artifacts import JsonValue
+from .real_pipeline_artifacts import JsonValue, json_mapping
 from .real_pipeline_evidence_contract import (
     EvidenceContractError,
     assert_todo10_contract,
 )
+from .real_pipeline_signal_process import FifoBarrier
+
+
+def test_fifo_barrier_waits_for_child_record(tmp_path: Path) -> None:
+    fifo = tmp_path / "announced"
+    with FifoBarrier.open(fifo, "delivered") as barrier:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os\n"
+                    f"fd = os.open({str(fifo)!r}, os.O_WRONLY)\n"
+                    "os.write(fd, b'decode_entered\\n')\n"
+                    "os.close(fd)\n"
+                ),
+            ],
+            text=True,
+        )
+        assert barrier.wait(process, timeout=1.0) == "decode_entered"
+    assert process.wait(timeout=1.0) == 0
+
+
+def test_fifo_barrier_kills_silent_child_on_bounded_timeout(tmp_path: Path) -> None:
+    fifo = tmp_path / "silent"
+    with FifoBarrier.open(fifo, "silent barrier") as barrier:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import signal; signal.pause()"],
+            text=True,
+        )
+        with pytest.raises(AssertionError, match="silent barrier.*timed out"):
+            _ = barrier.wait(process, timeout=0.1)
+    assert process.wait(timeout=1.0) != 0
+
+
+def test_fifo_barrier_names_child_that_exits_before_record(tmp_path: Path) -> None:
+    fifo = tmp_path / "exited"
+    with FifoBarrier.open(fifo, "exit barrier") as barrier:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "raise SystemExit(3)"],
+            text=True,
+        )
+        with pytest.raises(AssertionError, match="exit barrier.*child exited first"):
+            _ = barrier.wait(process, timeout=0.5)
+    assert process.wait(timeout=1.0) == 3
+
+
+@pytest.mark.parametrize("after_audio", [False, True])
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_failed_pipeline_lifecycle_preserves_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_audio: bool,
+    exception_type: type[BaseException],
+) -> None:
+    from sttx import model
+    from sttx.backend_contract import PARAKEET_REVISION
+    from ..model_helpers import ALL_NAMES, write_files
+    from . import test_real_pipeline as pipeline
+
+    failure = exception_type("injected lifecycle failure")
+    identity = tmp_path / "evidence" / "pipeline.json"
+    identity.parent.mkdir()
+    _ = identity.write_text('{"gate":{"verdict":"pass","assertion":"stale"}}')
+    _ = (identity.parent / "task-10-sttx-python-transcriber.log").write_text("FAILED: stale\n")
+    _ = (identity.parent / "task-10-done-claim.json").write_text('{"status":"stale pass"}')
+    audio = tmp_path / "qa-wav-cache" / "en.wav"
+    snapshot = tmp_path / "snapshots" / PARAKEET_REVISION
+    write_files(snapshot, ALL_NAMES)
+    bundle = model.resolve_bundle(snapshot)
+
+    def acquire() -> model.ModelBundle:
+        started = _read_evidence(identity)
+        assert started["gate"] == {"verdict": "started", "assertion": None}
+        if not after_audio:
+            raise failure
+        return bundle
+
+    def acquire_audio(**_kwargs: JsonValue) -> str:
+        audio.parent.mkdir()
+        _ = audio.write_bytes(b"owned audio")
+        return str(audio)
+
+    def fail_sample_rate(_path: Path) -> int:
+        raise failure
+
+    monkeypatch.setattr(model, "resolve_bundle", acquire)
+    monkeypatch.setattr(pipeline, "hf_hub_download", acquire_audio)
+    monkeypatch.setattr(pipeline, "environment_identity", lambda: {"probe": "offline"})
+    monkeypatch.setattr(pipeline, "_sample_rate", fail_sample_rate)
+
+    with pytest.raises(exception_type) as captured:
+        pipeline.test_real_pinned_pipeline_gate(tmp_path, monkeypatch, identity)
+
+    assert captured.value is failure
+    evidence = _read_evidence(identity)
+    assert evidence["gate"] == {
+        "verdict": "fail",
+        "assertion": f"{exception_type.__name__}: injected lifecycle failure",
+    }
+    assert evidence["failure"] == {
+        "type": exception_type.__name__, "message": "injected lifecycle failure",
+    }
+    assert evidence["environment"] == {"probe": "offline"}
+    from scripts.compute_backend_fingerprint import fingerprint
+
+    assert evidence["venv"] == sys.prefix
+    assert evidence["executable"] == sys.executable
+    assert evidence["fingerprint"] == fingerprint(require_sources=True)
+    assert evidence["commands"] == {}
+    if after_audio:
+        assert json_mapping(evidence["model"], "model")["commit"] == PARAKEET_REVISION
+    cleanup = _read_evidence(identity.parent / "task-10-cleanup-receipt.json")
+    assert cleanup == evidence["cleanup"]
+    assert cleanup["qa_wav_cache_removed"] is True
+    assert cleanup["qa_en_wav_deleted"] is True
+    assert not audio.exists()
+    assert not audio.parent.exists()
+    lines = (identity.parent / "task-10-sttx-python-transcriber.log").read_text().splitlines()
+    assert sum("FAILED:" in line for line in lines) == 1
+    assert not list(identity.parent.glob("*.tmp"))
+    assert not (identity.parent / "task-10-done-claim.json").exists()
+
+
+@pytest.mark.parametrize("target", ["pipeline.json", "task-10-cleanup-receipt.json"])
+@pytest.mark.parametrize("secondary_type", [OSError, KeyboardInterrupt])
+def test_pipeline_writer_failure_preserves_original_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    secondary_type: type[BaseException],
+) -> None:
+    from sttx import model
+    from . import test_real_pipeline as pipeline
+
+    failure = RuntimeError("original acquisition error")
+    identity = tmp_path / "evidence" / "pipeline.json"
+    replace = os.replace
+
+    def broken_replace(source: Path, destination: Path) -> None:
+        if destination.name == target:
+            raise secondary_type("secondary writer error")
+        replace(source, destination)
+
+    def acquire() -> model.ModelBundle:
+        monkeypatch.setattr(os, "replace", broken_replace)
+        raise failure
+
+    monkeypatch.setattr(model, "resolve_bundle", acquire)
+    monkeypatch.setattr(pipeline, "environment_identity", lambda: {"probe": "offline"})
+    with pytest.raises(RuntimeError) as captured:
+        pipeline.test_real_pinned_pipeline_gate(tmp_path, monkeypatch, identity)
+
+    assert captured.value is failure
+    assert any("secondary writer error" in note for note in failure.__notes__)
+    assert not list(identity.parent.glob("*.tmp"))
+    evidence = _read_evidence(identity)
+    if target == "pipeline.json":
+        assert json_mapping(evidence["gate"], "gate")["verdict"] == "started"
+        receipt = _read_evidence(identity.parent / "task-10-cleanup-receipt.json")
+        assert receipt["qa_wav_cache_removed"] is True
+    else:
+        assert json_mapping(evidence["gate"], "gate")["verdict"] == "fail"
+        assert json_mapping(evidence["failure"], "failure")["message"] == "original acquisition error"
+
+
+def _read_evidence(path: Path) -> Mapping[str, JsonValue]:
+    payload: JsonValue = json.loads(path.read_text())
+    return json_mapping(payload, "evidence")
 
 def test_current_false_positive_evidence_is_rejected_when_present(tmp_path: Path) -> None:
     payload = _valid_evidence(tmp_path)
@@ -87,7 +262,9 @@ def test_qa_wav_source_sample_rate_accepts_observed_upstream_rate(tmp_path: Path
             assert_todo10_contract(evidence)
 
 
-def test_signal_barriers_reject_bookkeeping_and_cpu_only_proofs(tmp_path: Path) -> None:
+def test_signal_barriers_reject_bookkeeping_and_incomplete_decode_proofs(
+    tmp_path: Path,
+) -> None:
     evidence = _valid_evidence(tmp_path)
     hf_probe = _first_probe(evidence, "hf", "SIGINT")
     for partial in (
@@ -133,11 +310,57 @@ def test_signal_barriers_reject_bookkeeping_and_cpu_only_proofs(tmp_path: Path) 
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
     decode_probe["barrier"] = {
-        "cpu_ticks_before": 10,
-        "cpu_ticks_after": 11,
-        "ready": str(tmp_path / "ready"),
+        "decode_returned_exists": False,
+        "output_finals_exist": False,
     }
     with pytest.raises(EvidenceContractError, match="real decode marker"):
+        assert_todo10_contract(evidence)
+
+    evidence = _valid_evidence(tmp_path)
+    decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+    barrier = decode_probe["barrier"]
+    assert isinstance(barrier, dict)
+    barrier["decode_returned_exists"] = True
+    with pytest.raises(EvidenceContractError, match="native decode returned"):
+        assert_todo10_contract(evidence)
+
+    evidence = _valid_evidence(tmp_path)
+    decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+    barrier = decode_probe["barrier"]
+    assert isinstance(barrier, dict)
+    barrier["output_finals_exist"] = True
+    with pytest.raises(EvidenceContractError, match="final outputs"):
+        assert_todo10_contract(evidence)
+
+
+def test_cancellable_acquisition_signal_phases_are_required(tmp_path: Path) -> None:
+    # Given otherwise valid evidence without production acquisition probes.
+    evidence = _valid_evidence(tmp_path)
+    signals = evidence["signals"]
+    assert isinstance(signals, dict)
+    probes = signals["probes"]
+    assert isinstance(probes, list)
+    signals["probes"] = [
+        probe
+        for probe in probes
+        if isinstance(probe, dict) and probe["phase"] != "cancellable_acquisition"
+    ]
+
+    # When/Then the evidence contract rejects the missing production path.
+    with pytest.raises(EvidenceContractError, match="missing signal probes"):
+        assert_todo10_contract(evidence)
+
+
+def test_cancellable_acquisition_signal_phase_rejects_staging_residue(
+    tmp_path: Path,
+) -> None:
+    # Given production acquisition evidence that retains its staging file.
+    evidence = _valid_evidence(tmp_path)
+    probe = _first_probe(evidence, "cancellable_acquisition", "SIGINT")
+    probe["staging"] = [".silero_vad.onnx.token.tmp"]
+
+    # When/Then the evidence contract rejects the leaked staging file.
+    with pytest.raises(EvidenceContractError, match="left Silero staging"):
         assert_todo10_contract(evidence)
 
 
@@ -183,9 +406,14 @@ def _valid_evidence(tmp_path: Path) -> dict[str, JsonValue]:
     }
     warm_assets = {name: dict(identity) for name, identity in assets.items()}
     probes: list[JsonValue] = []
-    for phase in ("hf", "silero", "native_decode"):
+    for phase in ("hf", "silero", "cancellable_acquisition", "native_decode"):
         for signum in ("SIGINT", "SIGTERM"):
-            probes.append({"phase": phase, "signum": signum, "barrier": _barrier(tmp_path, phase)})
+            probes.append({
+                "phase": phase,
+                "signum": signum,
+                "barrier": _barrier(tmp_path, phase),
+                "staging": [],
+            })
     return {
         "cold_env": {"values": {"HF_HUB_CACHE": str(hf_hub)}},
         "model": {
@@ -231,11 +459,17 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
         case "silero":
             staged = str(tmp_path / ".silero_vad.onnx.tmp")
             return {"ready": staged, "staged_path": staged, "staged_size": 64}
+        case "cancellable_acquisition":
+            staged = str(tmp_path / ".silero_vad.onnx.token.tmp")
+            return {
+                "connect_target": "github.com:443",
+                "process_live_at_barrier": True,
+                "staging_at_barrier": [staged],
+            }
         case "native_decode":
             return {
-                "cpu_ticks_before": 10,
-                "cpu_ticks_after": 11,
-                "real_decode_entered": str(tmp_path / "real_decode_entered"),
+                "real_decode_entered": "decode_entered",
+                "decode_returned_exists": False,
                 "output_finals_exist": False,
             }
         case _:

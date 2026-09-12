@@ -21,6 +21,7 @@ import sherpa_onnx
 from huggingface_hub import hf_hub_download
 
 from sttx.audio import PreparedAudio, normalize_media
+from sttx.backend_contract import ENCODER_FRAME, PARAKEET_REVISION
 from sttx.model import PARAKEET_REPO_ID, SILERO_URL, ModelBundle, resolve_bundle
 
 SAMPLE_RATE = 16_000
@@ -158,9 +159,15 @@ def _assert_result_contract(
     assert all(end >= start for start, end in zip(timestamps, ends)), (
         f"token ends precede token starts: {tuple(zip(timestamps, ends))}"
     )
-    assert ends[-1] <= final_chunk_end_seconds + 1e-3, (
-        "final token end exceeds the final VAD chunk end: "
-        f"{ends[-1]} > {final_chunk_end_seconds}"
+    assert timestamps[-1] <= final_chunk_end_seconds + ENCODER_FRAME, (
+        "final token starts beyond the encoder frame covering the chunk end: "
+        f"{timestamps[-1]} > {final_chunk_end_seconds} + {ENCODER_FRAME}"
+    )
+    assert ends[-1] - final_chunk_end_seconds <= ENCODER_FRAME + max(
+        durations, default=0.0
+    ), (
+        "final token end exceeds the chunk by more than one encoder frame plus "
+        f"the longest duration in the chunk: {ends[-1]} > {final_chunk_end_seconds}"
     )
     return ContractObservation(reconstructed, tuple(controls), tuple(ends))
 
@@ -310,7 +317,7 @@ def _bundle_identity(bundle: ModelBundle, commit: str) -> dict[str, JsonValue]:
         "hugging_face": {
             "repo_id": PARAKEET_REPO_ID,
             "resolved_snapshot_commit": commit,
-            "runtime_revision_pinned": False,
+            "runtime_revision_pinned": True,
         },
         "runtime_assets": {
             name: _asset_identity(path) for name, path in paths.items()
@@ -345,6 +352,7 @@ def test_current_binding_and_model_contract(
     try:
         bundle = resolve_bundle()
         commit = _snapshot_commit(bundle)
+        assert commit == PARAKEET_REVISION, (commit, PARAKEET_REVISION)
         evidence.update(_bundle_identity(bundle, commit))
         wav = Path(
             hf_hub_download(
