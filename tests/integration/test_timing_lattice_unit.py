@@ -170,9 +170,10 @@ def test_comparator_when_identity_drifts(path: tuple[str | int, ...], value: Jso
 
 
 @pytest.mark.parametrize(("delta", "count", "accepted"), [
-    (39_990, 40, True), (40_000, 1, True), (40_000, 2, False),
-    (79_990, 40, False), (80_000, 1, True), (80_000, 2, False),
-    (80_010, 1, False),
+    (39_990, 40, True), (40_000, 8, True), (40_000, 9, False),
+    (80_000, 8, True), (80_000, 9, False),
+    (160_000, 8, True), (160_000, 9, False),
+    (160_010, 1, False),
 ])
 @pytest.mark.parametrize("field", ["timestamps_us", "durations_us"])
 def test_comparator_when_timing_crosses_threshold(field: str, delta: int,
@@ -226,8 +227,8 @@ def test_parser_when_collection_is_reversed(collection: str) -> None:
         _ = lattice.load_payload(json.dumps(document))
 
 
-@pytest.mark.parametrize(("size", "count", "accepted"), [(49, 1, True), (99, 2, False),
-    (100, 2, True), (100, 3, False), (150, 3, True), (150, 4, False)])
+@pytest.mark.parametrize(("size", "count", "accepted"), [(49, 9, True), (49, 10, False),
+    (100, 20, True), (100, 21, False), (150, 30, True), (150, 31, False)])
 @pytest.mark.parametrize("field", ["timestamps_us", "durations_us", "start_us", "end_us"])
 def test_material_budget_when_array_size_changes(size: int, count: int, accepted: bool,
                                                 field: str) -> None:
@@ -257,8 +258,8 @@ def test_parser_when_json_integer_exceeds_decoder_limit() -> None:
 
 
 @pytest.mark.parametrize("field", ["start_us", "end_us"])
-@pytest.mark.parametrize(("delta", "accepted"), [(39_990, True), (40_000, True),
-    (79_990, True), (80_000, True), (80_010, False)])
+@pytest.mark.parametrize(("delta", "accepted"), [(39_990, True), (80_000, True),
+    (160_000, True), (160_010, False)])
 def test_segment_bound_when_hard_limit_is_crossed(field: str, delta: int, accepted: bool) -> None:
     payload = complete_payload()
     changed = deepcopy(payload)

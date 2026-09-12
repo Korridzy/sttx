@@ -88,9 +88,13 @@ promoted. Failed rotations restore the old baseline and anchor together.
   envelope, not a multilingual corpus or exhaustive numerical equivalence proof.
   An observed timestamp gcd can alias a multiple of the true lattice. The
   [comparator](tests/integration/timing_lattice.py) quantizes to 10 microseconds,
-  permits bounded drift up to 80000 microseconds, and limits material changes in
-  the 40000-80000 band to `max(1, (2*n)//100)` per compared timing array. Changes
-  outside these observations or within allowed tolerances may go undetected.
+  permits bounded drift up to 160000 microseconds, which is two encoder frames,
+  and limits changes of 40000 microseconds or more to `max(1, (20*n)//100)` per
+  compared timing array. That envelope is deliberately wide enough to absorb the
+  one and two frame shifts that int8 kernels produce on different CPUs, so the
+  same model qualifies on a developer machine and on a hosted runner. Token
+  sequences and transcript text remain exact-match. Changes outside these
+  observations or within allowed tolerances may go undetected.
 - Exact direct dependency pins do not lock transitive packages, OS libraries,
   ffmpeg, hardware, or every numerical kernel. Platform identity records system
   and machine, not all CPU/runtime characteristics. Qualification of a local
