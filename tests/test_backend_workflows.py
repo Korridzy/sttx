@@ -84,7 +84,14 @@ def test_backend_structure() -> None:
     assert items["python"]["uses"] == SETUP_PYTHON_ACTION
     assert mapping(items["python"]["with"])["python-version"] == "3.13"
     assert items["poetry"]["run"] == "pipx install poetry==2.4.1"
-    assert items["system"]["run"] == "sudo apt-get update\nsudo apt-get install -y --no-install-recommends ffmpeg strace\n"
+    assert items["system"]["run"] == (
+        "sudo apt-get update\n"
+        "sudo apt-get install -y --no-install-recommends ffmpeg strace\n"
+        "if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then\n"
+        "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n"
+        "fi\n"
+        "unshare --map-root-user --net -- true\n"
+    )
     assert items["dependencies"]["run"] == "poetry install --no-interaction"
     for name, filename, option, output in zip(GATES, ("test_timing_qualification.py", "test_binding_contract.py", "test_real_pipeline.py"),
                                              ("qualification", "identity", "identity"), FILES[:3], strict=True):
