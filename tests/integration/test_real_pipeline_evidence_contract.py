@@ -310,19 +310,20 @@ def test_signal_barriers_reject_bookkeeping_and_incomplete_decode_proofs(
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
     decode_probe["barrier"] = {
-        "decode_returned_exists": False,
+        "native_decode_us": 572_386,
         "output_finals_exist": False,
     }
     with pytest.raises(EvidenceContractError, match="real decode marker"):
         assert_todo10_contract(evidence)
 
-    evidence = _valid_evidence(tmp_path)
-    decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
-    barrier = decode_probe["barrier"]
-    assert isinstance(barrier, dict)
-    barrier["decode_returned_exists"] = True
-    with pytest.raises(EvidenceContractError, match="native decode returned"):
-        assert_todo10_contract(evidence)
+    for spent in (0, -1):
+        evidence = _valid_evidence(tmp_path)
+        decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+        barrier = decode_probe["barrier"]
+        assert isinstance(barrier, dict)
+        barrier["native_decode_us"] = spent
+        with pytest.raises(EvidenceContractError, match="inside the native call"):
+            assert_todo10_contract(evidence)
 
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
@@ -469,7 +470,7 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
         case "native_decode":
             return {
                 "real_decode_entered": "decode_entered",
-                "decode_returned_exists": False,
+                "native_decode_us": 572_386,
                 "output_finals_exist": False,
             }
         case _:
