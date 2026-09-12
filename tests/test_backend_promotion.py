@@ -238,5 +238,5 @@ def test_baseline_when_real_qualification_is_promoted_matches_current_contract()
     record = checker.load_record(path, baseline=True)
 
     checker.check_current(record)
-    assert len(checker.SOURCES) == 12
+    assert len(checker.SOURCES) == 26
     assert record.signature == signature_sha256(record.payload)

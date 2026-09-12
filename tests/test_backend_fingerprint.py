@@ -305,8 +305,8 @@ def test_qualification_when_any_bound_source_absent_rejects(tmp_path: Path, sour
         checker.fingerprint(root, require_sources=True)
 
 
-def test_manifest_when_active_has_exact_twelve_sources() -> None:
+def test_manifest_when_active_has_exact_twenty_six_sources() -> None:
     from scripts import compute_backend_fingerprint as checker
 
     assert checker.SOURCES == SOURCES
-    assert len(SOURCES) == len(set(SOURCES)) == 12
+    assert len(SOURCES) == len(set(SOURCES)) == 26

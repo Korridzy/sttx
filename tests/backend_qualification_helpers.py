@@ -21,7 +21,14 @@ SOURCES: Final = (SCRIPT, "tests/integration/timing_lattice.py",
     "tests/integration/test_timing_qualification.py", "tests/conftest.py", "src/sttx/asr.py", "src/sttx/cli.py",
     "tests/integration/qualification_schema.py", "tests/integration/qualification_validation.py",
     "tests/integration/qualification_evaluation.py", "tests/integration/qualification_recording.py",
-    "tests/integration/qualification_probes.py", "scripts/backend_change_detector.py")
+    "tests/integration/qualification_probes.py", "scripts/backend_change_detector.py",
+    "src/sttx/model.py", "src/sttx/audio.py", "src/sttx/asr_events.py",
+    "tests/integration/test_binding_contract.py", "tests/integration/test_real_pipeline.py",
+    "tests/integration/real_pipeline_artifacts.py", "tests/integration/real_pipeline_checks.py",
+    "tests/integration/real_pipeline_evidence_contract.py", "tests/integration/real_pipeline_media.py",
+    "tests/integration/real_pipeline_observability.py", "tests/integration/real_pipeline_runner.py",
+    "tests/integration/real_pipeline_signal_process.py", "tests/integration/real_pipeline_signals.py",
+    "tests/integration/real_pipeline_trace.py")
 
 
 def invoke(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

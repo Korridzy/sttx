@@ -52,7 +52,7 @@ not presented as the current state.
 | Original goal | Current mechanism |
 | --- | --- |
 | Signal backend timing changes before adoption | [Exact runtime pins](pyproject.toml), [real qualification](tests/integration/test_timing_qualification.py), and [blocking CI/release dependencies](.github/workflows/release.yml) make upgrades explicit and test observed behavior. |
-| Make a model swap require conscious timing re-evaluation | The [shipped contract](src/sttx/backend_contract.py) names model revision/hashes, shared production settings, independent fixture identity, timing constants, and anchor. The [12-source complete-byte fingerprint](scripts/compute_backend_fingerprint.py) invalidates stale qualification; reviewed local regeneration is mandatory. |
+| Make a model swap require conscious timing re-evaluation | The [shipped contract](src/sttx/backend_contract.py) names model revision/hashes, shared production settings, independent fixture identity, timing constants, and anchor. The [26-source complete-byte fingerprint](scripts/compute_backend_fingerprint.py) invalidates stale qualification; reviewed local regeneration is mandatory. |
 | Avoid recurring native-gate cost on ordinary PRs | The [AST/diff detector](scripts/backend_change_detector.py) and [CI fast path](.github/workflows/ci.yml) skip native installs/gates/uploads when the backend fingerprint and record are unchanged. |
 | Preserve cold acquisition | The [real pipeline](tests/integration/test_real_pipeline.py) keeps isolated cold/warm and signal probes. Qualification/binding may share only the job-local ambient cache; workflows do not persist model caches. |
 

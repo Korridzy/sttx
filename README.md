@@ -222,7 +222,7 @@ transitive dependency or a promise of identical numerics on every CPU.
 The qualification fingerprint includes sorted direct dependencies, the backend
 contract payload (settings, asset and independently pinned fixture identities,
 timing constants, probe version, and approved-run anchor), and the complete
-bytes of exactly these 12 required sources:
+bytes of exactly these 26 required sources:
 
 ```text
 scripts/compute_backend_fingerprint.py
@@ -230,6 +230,9 @@ scripts/backend_change_detector.py
 tests/conftest.py
 src/sttx/asr.py
 src/sttx/cli.py
+src/sttx/model.py
+src/sttx/audio.py
+src/sttx/asr_events.py
 tests/integration/timing_lattice.py
 tests/integration/test_timing_qualification.py
 tests/integration/qualification_schema.py
@@ -237,10 +240,21 @@ tests/integration/qualification_validation.py
 tests/integration/qualification_evaluation.py
 tests/integration/qualification_recording.py
 tests/integration/qualification_probes.py
+tests/integration/test_binding_contract.py
+tests/integration/test_real_pipeline.py
+tests/integration/real_pipeline_artifacts.py
+tests/integration/real_pipeline_checks.py
+tests/integration/real_pipeline_evidence_contract.py
+tests/integration/real_pipeline_media.py
+tests/integration/real_pipeline_observability.py
+tests/integration/real_pipeline_runner.py
+tests/integration/real_pipeline_signal_process.py
+tests/integration/real_pipeline_signals.py
+tests/integration/real_pipeline_trace.py
 ```
 
 Any bound-byte change, including comments, invalidates the old fingerprint.
-All 12 sources must be present for qualification and release. New executable
+All 26 sources must be present for qualification and release. New executable
 qualification logic must join the binding before use, not escape into an
 unhashed helper. Ownership is deliberate:
 
@@ -251,6 +265,8 @@ unhashed helper. Ownership is deliberate:
 | `tests/integration/test_timing_qualification.py` | Native gate lifecycle and failure envelopes |
 | `qualification_schema.py`, `qualification_validation.py`, `qualification_evaluation.py` | Typed serialization, parsing/validation, and pure comparison respectively |
 | `qualification_recording.py`, `qualification_probes.py` | Passive production recording and real probe collection respectively |
+| `src/sttx/model.py`, `src/sttx/audio.py`, `src/sttx/asr_events.py` | Asset acquisition and checksums, ffmpeg normalization of the observed samples, and the activity-event union the probes consume |
+| `tests/integration/test_binding_contract.py`, `test_real_pipeline.py`, `real_pipeline_*.py` | Native binding and real pipeline gates, their fixtures, checks, and evidence |
 | `tests/conftest.py` | Pytest options and atomic evidence writer |
 | `tests/backend_qualification_helpers.py` | Offline synthetic fixtures only; never a checker/gate runtime import |
 

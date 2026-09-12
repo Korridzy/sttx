@@ -1,8 +1,8 @@
 """Read-only qualification identity. Print permits an absent future gate only.
 
 Run with Python 3.11+ (including -I -S); no installed distribution is required.
-Qualification checks require all twelve sources. Only trusted pure helpers and
-the contract are executed; historical/base modules are never loaded.
+Qualification checks require all twenty-six sources. Only trusted pure helpers
+and the contract are executed; historical/base modules are never loaded.
 """
 from __future__ import annotations
 
@@ -34,7 +34,14 @@ SOURCES: Final = ("scripts/compute_backend_fingerprint.py", "tests/integration/t
     "src/sttx/asr.py", "src/sttx/cli.py",
     "tests/integration/qualification_schema.py", "tests/integration/qualification_validation.py",
     "tests/integration/qualification_evaluation.py", "tests/integration/qualification_recording.py",
-    "tests/integration/qualification_probes.py", "scripts/backend_change_detector.py")
+    "tests/integration/qualification_probes.py", "scripts/backend_change_detector.py",
+    "src/sttx/model.py", "src/sttx/audio.py", "src/sttx/asr_events.py",
+    "tests/integration/test_binding_contract.py", "tests/integration/test_real_pipeline.py",
+    "tests/integration/real_pipeline_artifacts.py", "tests/integration/real_pipeline_checks.py",
+    "tests/integration/real_pipeline_evidence_contract.py", "tests/integration/real_pipeline_media.py",
+    "tests/integration/real_pipeline_observability.py", "tests/integration/real_pipeline_runner.py",
+    "tests/integration/real_pipeline_signal_process.py", "tests/integration/real_pipeline_signals.py",
+    "tests/integration/real_pipeline_trace.py")
 
 
 def _load(path: Path, **bindings: ModuleType) -> ModuleType:
