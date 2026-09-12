@@ -1,3 +1,4 @@
+# noqa: SIZE_OK because signal process helpers form one fingerprint bound native gate boundary
 from __future__ import annotations
 
 import os
@@ -168,13 +169,21 @@ def wait_for_hf_partial(root: Path, process: subprocess.Popen[str]) -> dict[str,
     required = {"encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"}
     while time.monotonic() < deadline:
         hf_roots = (root / "hf" / "hub", root / "hf" / "xet")
-        partials = [
-            path
-            for hf_root in hf_roots
-            if hf_root.exists()
-            for path in hf_root.rglob("*")
-            if path.is_file() and path.stat().st_size > 0
-        ]
+        partials: list[Path] = []
+        sizes: dict[Path, int] = {}
+        for hf_root in hf_roots:
+            if not hf_root.exists():
+                continue
+            for path in hf_root.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    size = path.stat().st_size
+                except FileNotFoundError:
+                    continue
+                if size > 0:
+                    partials.append(path)
+                    sizes[path] = size
         runtime = [
             path
             for path in partials
@@ -196,7 +205,7 @@ def wait_for_hf_partial(root: Path, process: subprocess.Popen[str]) -> dict[str,
                     str(path): kind for path, kind in candidates.items()
                 },
                 "partial_asset_sizes": {
-                    str(path): path.stat().st_size for path in candidates
+                    str(path): sizes[path] for path in candidates
                 },
                 "process_live_at_barrier": process.poll() is None,
                 "runtime_complete_count": len(runtime),
