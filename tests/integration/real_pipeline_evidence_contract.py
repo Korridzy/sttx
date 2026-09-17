@@ -171,8 +171,13 @@ def _assert_native_decode_barrier(barrier: Mapping[str, JsonValue]) -> None:
         raise EvidenceContractError("native decode barrier did not record real decode marker")
     if _text(barrier, "real_decode_entered") != "decode_entered":
         raise EvidenceContractError("native decode barrier did not record real decode marker")
-    if _number(barrier, "native_decode_us") <= 0:
-        raise EvidenceContractError("native decode barrier did not record time spent inside the native call")
+    entered = _number(barrier, "native_entry_us")
+    sent = _number(barrier, "signal_sent_us")
+    returned = _number(barrier, "native_return_us")
+    if not entered < sent < returned:
+        raise EvidenceContractError(
+            "native decode barrier did not prove the signal arrived inside the native call"
+        )
     if _text(barrier, "output_finals_exist") != "false":
         raise EvidenceContractError("native decode barrier fired after final outputs existed")
 
@@ -236,6 +241,6 @@ def _text(source: Mapping[str, JsonValue] | JsonValue, key: str) -> str:
 
 def _number(source: Mapping[str, JsonValue], key: str) -> int:
     value = source.get(key)
-    if not isinstance(value, int):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise EvidenceContractError(f"{key} is not an integer")
     return value

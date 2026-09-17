@@ -177,6 +177,10 @@ def finish_probe(
     barrier: dict[str, JsonValue],
 ) -> SignalProbe:
     os.killpg(process.pid, signum)
+    # Stamped after the signal is delivered, so it is an upper bound on the moment
+    # the child received it. CLOCK_MONOTONIC is machine wide, so this timestamp is
+    # directly comparable with the ones the child records.
+    barrier = {**barrier, "signal_sent_us": int(time.monotonic() * 1_000_000)}
     try:
         stdout, stderr = process.communicate(timeout=SIGNAL_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
