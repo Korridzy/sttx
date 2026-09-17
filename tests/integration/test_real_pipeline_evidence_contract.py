@@ -310,20 +310,32 @@ def test_signal_barriers_reject_bookkeeping_and_incomplete_decode_proofs(
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
     decode_probe["barrier"] = {
-        "native_decode_us": 572_386,
+        "native_entry_us": 1_000_000,
+        "signal_sent_us": 1_500_000,
+        "native_return_us": 6_000_000,
         "output_finals_exist": False,
     }
     with pytest.raises(EvidenceContractError, match="real decode marker"):
         assert_todo10_contract(evidence)
 
-    for spent in (0, -1):
+    # The signal must land strictly between native entry and native return: before
+    # entry and after return are exactly the orderings that prove nothing.
+    for sent in (999_999, 1_000_000, 6_000_000, 6_000_001):
         evidence = _valid_evidence(tmp_path)
         decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
         barrier = decode_probe["barrier"]
         assert isinstance(barrier, dict)
-        barrier["native_decode_us"] = spent
+        barrier["signal_sent_us"] = sent
         with pytest.raises(EvidenceContractError, match="inside the native call"):
             assert_todo10_contract(evidence)
+
+    evidence = _valid_evidence(tmp_path)
+    decode_probe = _first_probe(evidence, "native_decode", "SIGINT")
+    barrier = decode_probe["barrier"]
+    assert isinstance(barrier, dict)
+    barrier["native_entry_us"] = True
+    with pytest.raises(EvidenceContractError, match="native_entry_us is not an integer"):
+        assert_todo10_contract(evidence)
 
     evidence = _valid_evidence(tmp_path)
     decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
@@ -470,7 +482,9 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
         case "native_decode":
             return {
                 "real_decode_entered": "decode_entered",
-                "native_decode_us": 572_386,
+                "native_entry_us": 1_000_000,
+                "signal_sent_us": 1_500_000,
+                "native_return_us": 6_000_000,
                 "output_finals_exist": False,
             }
         case _:
