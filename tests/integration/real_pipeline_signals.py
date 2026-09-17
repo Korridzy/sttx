@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -327,9 +327,11 @@ def _probe_native_decode(
     spent = env.root / "decode_native_us"
     # A Python signal handler cannot run while a native call holds the interpreter,
     # so it fires at the first bytecode boundary after decode_stream returns. The
-    # finally clause still runs while SystemExit propagates, which is why the
-    # elapsed native time is recorded there: its presence proves the child entered
-    # the native call and stayed in it while the signal was already pending.
+    # child therefore stamps the machine-wide monotonic clock when it enters the
+    # native call and again in a finally clause when control leaves it, and the
+    # parent stamps the same clock right after delivering the signal. Requiring
+    # entry < sent < return is what proves the signal landed while the native call
+    # was executing; an elapsed duration alone would not.
     with FifoBarrier.open(entered, "native decode entry") as decode_barrier:
         code = (
             "import os\n"
@@ -350,14 +352,14 @@ def _probe_native_decode(
             "            return\n"
             "        self.announced=True\n"
             f"        entered_fd=os.open({str(entered)!r}, os.O_WRONLY)\n"
-            "        os.write(entered_fd, b'decode_entered\\n')\n"
+            "        entry_us=int(time.monotonic()*1_000_000)\n"
+            "        os.write(entered_fd, f'decode_entered\\t{entry_us}\\n'.encode())\n"
             "        os.close(entered_fd)\n"
-            "        started=time.monotonic()\n"
             "        try:\n"
             "            self.raw.decode_stream(stream)\n"
             "        finally:\n"
             f"            Path({str(spent)!r}).write_text("
-            "str(int((time.monotonic()-started)*1_000_000)), encoding='utf-8')\n"
+            "f'{entry_us}\\t{int(time.monotonic()*1_000_000)}', encoding='utf-8')\n"
             "def make_recognizer(bundle):\n"
             "    return AnnouncingRecognizer(_PRODUCTION_DEPENDENCIES.make_recognizer(bundle))\n"
             "raise SystemExit(run([\n"
@@ -373,20 +375,28 @@ def _probe_native_decode(
             start_new_session=True,
         )
         try:
-            record = decode_barrier.wait(process)
+            record, _, entry_text = decode_barrier.wait(process).partition("\t")
             assert record == "decode_entered"
-            barrier: dict[str, JsonValue] = {"real_decode_entered": record}
+            barrier: dict[str, JsonValue] = {
+                "real_decode_entered": record,
+                "native_entry_us": int(entry_text),
+            }
             probe = finish_probe("native_decode", signum, env.root, process, barrier)
+            barrier = dict(probe.barrier)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 _ = process.communicate(timeout=5)
-    barrier["native_decode_us"] = (
-        int(spent.read_text(encoding="utf-8")) if spent.is_file() else -1
-    )
-    barrier["output_finals_exist"] = (
-        any(outdir.glob("*.json")) or any(outdir.glob("*.txt"))
-    )
-    assert barrier["native_decode_us"] > 0, probe.to_json()
-    assert barrier["output_finals_exist"] is False, probe.to_json()
-    return probe
+    assert spent.is_file(), probe.to_json()
+    recorded_entry, _, recorded_return = spent.read_text(encoding="utf-8").partition("\t")
+    entry_us = int(entry_text)
+    return_us = int(recorded_return)
+    sent_us = barrier["signal_sent_us"]
+    assert isinstance(sent_us, int)
+    finals_exist = any(outdir.glob("*.json")) or any(outdir.glob("*.txt"))
+    barrier["native_return_us"] = return_us
+    barrier["output_finals_exist"] = finals_exist
+    assert int(recorded_entry) == entry_us, probe.to_json()
+    assert entry_us < sent_us < return_us, probe.to_json()
+    assert finals_exist is False, probe.to_json()
+    return replace(probe, barrier=barrier)
