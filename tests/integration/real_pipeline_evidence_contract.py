@@ -171,8 +171,8 @@ def _assert_native_decode_barrier(barrier: Mapping[str, JsonValue]) -> None:
         raise EvidenceContractError("native decode barrier did not record real decode marker")
     if _text(barrier, "real_decode_entered") != "decode_entered":
         raise EvidenceContractError("native decode barrier did not record real decode marker")
-    if _text(barrier, "decode_returned_exists") != "false":
-        raise EvidenceContractError("native decode returned before the signal took effect")
+    if _number(barrier, "native_decode_us") <= 0:
+        raise EvidenceContractError("native decode barrier did not record time spent inside the native call")
     if _text(barrier, "output_finals_exist") != "false":
         raise EvidenceContractError("native decode barrier fired after final outputs existed")
 

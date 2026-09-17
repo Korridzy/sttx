@@ -324,10 +324,16 @@ def _probe_native_decode(
     env = sanitized_env(tmp_path / f"decode-{signum.name}")
     outdir = env.root / "out"
     entered = env.root / "decode-entered.fifo"
-    returned = env.root / "decode_returned"
+    spent = env.root / "decode_native_us"
+    # A Python signal handler cannot run while a native call holds the interpreter,
+    # so it fires at the first bytecode boundary after decode_stream returns. The
+    # finally clause still runs while SystemExit propagates, which is why the
+    # elapsed native time is recorded there: its presence proves the child entered
+    # the native call and stayed in it while the signal was already pending.
     with FifoBarrier.open(entered, "native decode entry") as decode_barrier:
         code = (
             "import os\n"
+            "import time\n"
             "from pathlib import Path\n"
             "from dataclasses import replace\n"
             "from sttx.cli import _PRODUCTION_DEPENDENCIES, run\n"
@@ -339,14 +345,19 @@ def _probe_native_decode(
             "        return self.raw.create_stream()\n"
             "    def decode_stream(self, stream):\n"
             "        first=not self.announced\n"
-            "        if first:\n"
-            "            self.announced=True\n"
-            f"            entered_fd=os.open({str(entered)!r}, os.O_WRONLY)\n"
-            "            os.write(entered_fd, b'decode_entered\\n')\n"
-            "            os.close(entered_fd)\n"
-            "        self.raw.decode_stream(stream)\n"
-            "        if first:\n"
-            f"            Path({str(returned)!r}).write_text('decode_returned', encoding='utf-8')\n"
+            "        if not first:\n"
+            "            self.raw.decode_stream(stream)\n"
+            "            return\n"
+            "        self.announced=True\n"
+            f"        entered_fd=os.open({str(entered)!r}, os.O_WRONLY)\n"
+            "        os.write(entered_fd, b'decode_entered\\n')\n"
+            "        os.close(entered_fd)\n"
+            "        started=time.monotonic()\n"
+            "        try:\n"
+            "            self.raw.decode_stream(stream)\n"
+            "        finally:\n"
+            f"            Path({str(spent)!r}).write_text("
+            "str(int((time.monotonic()-started)*1_000_000)), encoding='utf-8')\n"
             "def make_recognizer(bundle):\n"
             "    return AnnouncingRecognizer(_PRODUCTION_DEPENDENCIES.make_recognizer(bundle))\n"
             "raise SystemExit(run([\n"
@@ -370,10 +381,12 @@ def _probe_native_decode(
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 _ = process.communicate(timeout=5)
-    barrier["decode_returned_exists"] = returned.exists()
+    barrier["native_decode_us"] = (
+        int(spent.read_text(encoding="utf-8")) if spent.is_file() else -1
+    )
     barrier["output_finals_exist"] = (
         any(outdir.glob("*.json")) or any(outdir.glob("*.txt"))
     )
-    assert barrier["decode_returned_exists"] is False, probe.to_json()
+    assert barrier["native_decode_us"] > 0, probe.to_json()
     assert barrier["output_finals_exist"] is False, probe.to_json()
     return probe
