@@ -313,10 +313,33 @@ def test_signal_barriers_reject_bookkeeping_and_incomplete_decode_proofs(
         "native_entry_us": 1_000_000,
         "signal_sent_us": 1_500_000,
         "native_return_us": 6_000_000,
+        "control_native_us": 5_000_000,
         "output_finals_exist": False,
     }
     with pytest.raises(EvidenceContractError, match="real decode marker"):
         assert_todo10_contract(evidence)
+
+    # A signal that landed before the native call began leaves a near-empty
+    # interval, which the control comparison must reject.
+    for entered, sent, returned in ((1_000_000, 1_000_050, 1_000_100), (1_000_000, 1_500_000, 3_400_000)):
+        evidence = _valid_evidence(tmp_path)
+        decode_probe = _first_probe(evidence, "native_decode", "SIGINT")
+        barrier = decode_probe["barrier"]
+        assert isinstance(barrier, dict)
+        barrier["native_entry_us"] = entered
+        barrier["signal_sent_us"] = sent
+        barrier["native_return_us"] = returned
+        with pytest.raises(EvidenceContractError, match="unsignalled control decode"):
+            assert_todo10_contract(evidence)
+
+    for control in (0, -1):
+        evidence = _valid_evidence(tmp_path)
+        decode_probe = _first_probe(evidence, "native_decode", "SIGTERM")
+        barrier = decode_probe["barrier"]
+        assert isinstance(barrier, dict)
+        barrier["control_native_us"] = control
+        with pytest.raises(EvidenceContractError, match="unsignalled control decode"):
+            assert_todo10_contract(evidence)
 
     # The signal must land strictly between native entry and native return: before
     # entry and after return are exactly the orderings that prove nothing.
@@ -485,6 +508,7 @@ def _barrier(tmp_path: Path, phase: str) -> dict[str, JsonValue]:
                 "native_entry_us": 1_000_000,
                 "signal_sent_us": 1_500_000,
                 "native_return_us": 6_000_000,
+                "control_native_us": 5_000_000,
                 "output_finals_exist": False,
             }
         case _:

@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
+from typing import Final
 from urllib.parse import urlsplit
 
 from .real_pipeline_artifacts import JsonValue, root_manifest
@@ -42,6 +43,11 @@ class _ConnectProxy:
     expected_target: str
     connected: threading.Event
     targets: queue.Queue[str]
+
+
+# The control decode runs the whole CLI to completion on the long continuous
+# media, so it needs a longer budget than a signal barrier.
+CONTROL_TIMEOUT_SECONDS: Final = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,12 +169,19 @@ def prove_signal_barriers(
     evidence: dict[str, JsonValue],
 ) -> None:
     before = root_manifest(cold.root)
+    # Measured once, unsignalled: how long the native decode call really takes on
+    # this media and machine. The signalled probes compare against it, which is
+    # what rules out a signal that landed in the microseconds between the entry
+    # stamp and the native call itself, because that path never decodes at all.
+    control_native_us = _measure_native_decode(tmp_path, bundle_dir, media)
     probes: list[SignalProbe] = []
     for signum in (signal.SIGINT, signal.SIGTERM):
         probes.append(_probe_hf(tmp_path, bundle_dir, media, signum))
         probes.append(_probe_silero(tmp_path, bundle_dir, signum))
         probes.append(_probe_cancellable_acquisition(tmp_path, bundle_dir, signum))
-        probes.append(_probe_native_decode(tmp_path, cold, bundle_dir, media, signum))
+        probes.append(
+            _probe_native_decode(tmp_path, cold, bundle_dir, media, signum, control_native_us)
+        )
     after = root_manifest(cold.root)
     assert before == after
     for probe in probes:
@@ -313,12 +326,83 @@ def _probe_cancellable_acquisition(
     return probe
 
 
+def _decode_driver_code(entered: Path, spent: Path, media: Path, bundle_dir: Path, outdir: Path) -> str:
+    return (
+        "import os\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "from dataclasses import replace\n"
+        "from sttx.cli import _PRODUCTION_DEPENDENCIES, run\n"
+        "class AnnouncingRecognizer:\n"
+        "    def __init__(self, raw):\n"
+        "        self.raw=raw\n"
+        "        self.announced=False\n"
+        "    def create_stream(self):\n"
+        "        return self.raw.create_stream()\n"
+        "    def decode_stream(self, stream):\n"
+        "        first=not self.announced\n"
+        "        if not first:\n"
+        "            self.raw.decode_stream(stream)\n"
+        "            return\n"
+        "        self.announced=True\n"
+        f"        entered_fd=os.open({str(entered)!r}, os.O_WRONLY)\n"
+        "        entry_us=int(time.monotonic()*1_000_000)\n"
+        "        os.write(entered_fd, f'decode_entered\\t{entry_us}\\n'.encode())\n"
+        "        os.close(entered_fd)\n"
+        "        try:\n"
+        "            self.raw.decode_stream(stream)\n"
+        "        finally:\n"
+        f"            Path({str(spent)!r}).write_text("
+        "f'{entry_us}\\t{int(time.monotonic()*1_000_000)}', encoding='utf-8')\n"
+        "def make_recognizer(bundle):\n"
+        "    return AnnouncingRecognizer(_PRODUCTION_DEPENDENCIES.make_recognizer(bundle))\n"
+        "raise SystemExit(run([\n"
+        f"    {str(media)!r}, '-d', {str(outdir)!r}, '--model-dir', {str(bundle_dir)!r},\n"
+        "], _dependencies=replace(_PRODUCTION_DEPENDENCIES, make_recognizer=make_recognizer)))\n"
+    )
+
+
+def _native_interval(spent: Path) -> tuple[int, int]:
+    entry_text, _, return_text = spent.read_text(encoding="utf-8").partition("\t")
+    return int(entry_text), int(return_text)
+
+
+def _measure_native_decode(tmp_path: Path, bundle_dir: Path, media: Path) -> int:
+    env = sanitized_env(tmp_path / "decode-control")
+    outdir = env.root / "out"
+    entered = env.root / "decode-entered.fifo"
+    spent = env.root / "decode_native_us"
+    with FifoBarrier.open(entered, "native decode control entry") as control_barrier:
+        process = subprocess.Popen(
+            [sys.executable, "-c", _decode_driver_code(entered, spent, media, bundle_dir, outdir)],
+            env=env.subprocess_env(offline=True),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            record, _, _ = control_barrier.wait(process).partition("\t")
+            assert record == "decode_entered"
+            _, stderr = process.communicate(timeout=CONTROL_TIMEOUT_SECONDS)
+            assert process.returncode == 0, (process.returncode, stderr)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                _ = process.communicate(timeout=5)
+    entry_us, return_us = _native_interval(spent)
+    control = return_us - entry_us
+    assert control > 0, control
+    return control
+
+
 def _probe_native_decode(
     tmp_path: Path,
     cold: CacheEnv,
     bundle_dir: Path,
     media: Path,
     signum: signal.Signals,
+    control_native_us: int,
 ) -> SignalProbe:
     del cold
     env = sanitized_env(tmp_path / f"decode-{signum.name}")
@@ -333,41 +417,8 @@ def _probe_native_decode(
     # entry < sent < return is what proves the signal landed while the native call
     # was executing; an elapsed duration alone would not.
     with FifoBarrier.open(entered, "native decode entry") as decode_barrier:
-        code = (
-            "import os\n"
-            "import time\n"
-            "from pathlib import Path\n"
-            "from dataclasses import replace\n"
-            "from sttx.cli import _PRODUCTION_DEPENDENCIES, run\n"
-            "class AnnouncingRecognizer:\n"
-            "    def __init__(self, raw):\n"
-            "        self.raw=raw\n"
-            "        self.announced=False\n"
-            "    def create_stream(self):\n"
-            "        return self.raw.create_stream()\n"
-            "    def decode_stream(self, stream):\n"
-            "        first=not self.announced\n"
-            "        if not first:\n"
-            "            self.raw.decode_stream(stream)\n"
-            "            return\n"
-            "        self.announced=True\n"
-            f"        entered_fd=os.open({str(entered)!r}, os.O_WRONLY)\n"
-            "        entry_us=int(time.monotonic()*1_000_000)\n"
-            "        os.write(entered_fd, f'decode_entered\\t{entry_us}\\n'.encode())\n"
-            "        os.close(entered_fd)\n"
-            "        try:\n"
-            "            self.raw.decode_stream(stream)\n"
-            "        finally:\n"
-            f"            Path({str(spent)!r}).write_text("
-            "f'{entry_us}\\t{int(time.monotonic()*1_000_000)}', encoding='utf-8')\n"
-            "def make_recognizer(bundle):\n"
-            "    return AnnouncingRecognizer(_PRODUCTION_DEPENDENCIES.make_recognizer(bundle))\n"
-            "raise SystemExit(run([\n"
-            f"    {str(media)!r}, '-d', {str(outdir)!r}, '--model-dir', {str(bundle_dir)!r},\n"
-            "], _dependencies=replace(_PRODUCTION_DEPENDENCIES, make_recognizer=make_recognizer)))\n"
-        )
         process = subprocess.Popen(
-            [sys.executable, "-c", code],
+            [sys.executable, "-c", _decode_driver_code(entered, spent, media, bundle_dir, outdir)],
             env=env.subprocess_env(offline=True),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -388,15 +439,16 @@ def _probe_native_decode(
                 os.killpg(process.pid, signal.SIGKILL)
                 _ = process.communicate(timeout=5)
     assert spent.is_file(), probe.to_json()
-    recorded_entry, _, recorded_return = spent.read_text(encoding="utf-8").partition("\t")
+    recorded_entry, return_us = _native_interval(spent)
     entry_us = int(entry_text)
-    return_us = int(recorded_return)
     sent_us = barrier["signal_sent_us"]
     assert isinstance(sent_us, int)
     finals_exist = any(outdir.glob("*.json")) or any(outdir.glob("*.txt"))
     barrier["native_return_us"] = return_us
+    barrier["control_native_us"] = control_native_us
     barrier["output_finals_exist"] = finals_exist
-    assert int(recorded_entry) == entry_us, probe.to_json()
+    assert recorded_entry == entry_us, probe.to_json()
     assert entry_us < sent_us < return_us, probe.to_json()
+    assert 2 * (return_us - entry_us) >= control_native_us, probe.to_json()
     assert finals_exist is False, probe.to_json()
     return replace(probe, barrier=barrier)

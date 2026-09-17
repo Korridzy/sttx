@@ -301,5 +301,7 @@ def test_release_signal_child_uses_active_python(tmp_path: Path, monkeypatch: py
         if phase == "silero":
             _ = signals._probe_silero(tmp_path, tmp_path, signal.SIGINT)
         else:
-            _ = signals._probe_native_decode(tmp_path, sanitized_env(tmp_path / "cold"), tmp_path, tmp_path, signal.SIGINT)
+            _ = signals._probe_native_decode(
+                tmp_path, sanitized_env(tmp_path / "cold"), tmp_path, tmp_path, signal.SIGINT, 1_000_000
+            )
     assert commands[0][:2] == [active, "-c"]

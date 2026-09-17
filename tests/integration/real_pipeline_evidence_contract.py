@@ -174,9 +174,18 @@ def _assert_native_decode_barrier(barrier: Mapping[str, JsonValue]) -> None:
     entered = _number(barrier, "native_entry_us")
     sent = _number(barrier, "signal_sent_us")
     returned = _number(barrier, "native_return_us")
+    control = _number(barrier, "control_native_us")
     if not entered < sent < returned:
         raise EvidenceContractError(
             "native decode barrier did not prove the signal arrived inside the native call"
+        )
+    # An unsignalled control decode of the same media bounds how long the native
+    # call really runs. A signal that landed before the native call began would
+    # leave a near-empty interval, so requiring most of the control duration
+    # closes that window.
+    if control <= 0 or 2 * (returned - entered) < control:
+        raise EvidenceContractError(
+            "native decode barrier interval is too short against the unsignalled control decode"
         )
     if _text(barrier, "output_finals_exist") != "false":
         raise EvidenceContractError("native decode barrier fired after final outputs existed")
