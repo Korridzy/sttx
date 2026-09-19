@@ -39,7 +39,14 @@ not mocked substitutes, and must keep their assertions tied to observed facts.
   the existing staging, fsync, and `os.replace` paths.
 - Signal probes must cover both signals at all three phases. HF requires live
   partial runtime data and missing finals, Silero requires a nonempty `.tmp`
-  staging file, and native decode requires post-marker CPU work before finals.
+  staging file, and native decode requires proof that the signal arrived while the
+  native call was executing: the child stamps the machine-wide monotonic clock at
+  native entry and again in a finally clause at native return, the parent stamps it
+  right after delivery, entry < sent < return must hold, and the interval must
+  cover most of an unsignalled control decode of the same media. A Python handler
+  only runs once the native call returns, so neither an elapsed duration nor the
+  ordering alone proves overlap; the control comparison closes the window between
+  the entry stamp and the native call itself.
 - Keep the explicit `# noqa: SIZE_OK` markers on the two gate modules. Each
   marks an indivisible external compatibility probe with helpers split out.
 

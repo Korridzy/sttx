@@ -21,17 +21,17 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install Poetry
         run: pipx install poetry==2.4.1
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -44,11 +44,140 @@ jobs:
         run: poetry run python -m compileall -q src tests
       - name: Build
         run: poetry build
+  backend-compat:
+    name: backend-compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      EVIDENCE: ${{ github.workspace }}/backend-evidence
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - id: fetch
+        name: Fetch comparison objects
+        run: |
+          git fetch --no-tags origin "$HEAD_SHA"
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            if ! git fetch --no-tags origin "$BASE_SHA"; then
+              printf '%s\n' 'Base fetch unavailable; detector will apply its missing-base policy.'
+            fi
+          fi
+      - id: detect
+        name: Detect semantic backend changes
+        run: |
+          decision=$(python3 -I -S -B scripts/backend_change_detector.py --base "$BASE_SHA" --head "$HEAD_SHA" --root "$GITHUB_WORKSPACE")
+          needs_qualification=$(jq -er '.needs_qualification | if type == "boolean" then tostring else error("needs_qualification must be boolean") end' <<< "$decision")
+          printf 'needs_qualification=%s\n' "$needs_qualification" >> "$GITHUB_OUTPUT"
+      - id: fast
+        name: Backend unchanged
+        if: steps.detect.outputs.needs_qualification == 'false'
+        run: printf '%s\n' 'Backend unchanged; qualification not needed.'
+      - id: system
+        name: Install native tools
+        if: steps.detect.outputs.needs_qualification == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg strace
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --map-root-user --net -- true
+      - id: python
+        if: steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - id: poetry
+        name: Install Poetry
+        if: steps.detect.outputs.needs_qualification == 'true'
+        run: pipx install poetry==2.4.1
+      - id: dependencies
+        name: Install dependencies
+        if: steps.detect.outputs.needs_qualification == 'true'
+        run: poetry install --no-interaction
+      - id: qualification
+        if: steps.detect.outputs.needs_qualification == 'true'
+        continue-on-error: true
+        run: poetry run pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/candidate.json"
+      - id: binding
+        if: steps.detect.outputs.needs_qualification == 'true'
+        continue-on-error: true
+        run: poetry run pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/binding.json"
+      - id: pipeline
+        if: steps.detect.outputs.needs_qualification == 'true'
+        continue-on-error: true
+        run: poetry run pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/pipeline.json"
+      - id: upload_candidate
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-candidate
+          path: ${{ env.EVIDENCE }}/candidate.json
+          if-no-files-found: error
+      - id: upload_binding
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-binding
+          path: ${{ env.EVIDENCE }}/binding.json
+          if-no-files-found: error
+      - id: upload_pipeline
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-pipeline
+          path: ${{ env.EVIDENCE }}/pipeline.json
+          if-no-files-found: error
+      - id: upload_log
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-log
+          path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
+          if-no-files-found: error
+      - id: upload_cleanup
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-cleanup
+          path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
+          if-no-files-found: error
+      - id: aggregate
+        name: Require complete backend qualification
+        if: always() && steps.detect.outputs.needs_qualification == 'true'
+        env:
+          QUALIFICATION: ${{ steps.qualification.outcome }}
+          BINDING: ${{ steps.binding.outcome }}
+          PIPELINE: ${{ steps.pipeline.outcome }}
+          UPLOAD_CANDIDATE: ${{ steps.upload_candidate.outcome }}
+          UPLOAD_BINDING: ${{ steps.upload_binding.outcome }}
+          UPLOAD_PIPELINE: ${{ steps.upload_pipeline.outcome }}
+          UPLOAD_LOG: ${{ steps.upload_log.outcome }}
+          UPLOAD_CLEANUP: ${{ steps.upload_cleanup.outcome }}
+        run: |
+          for outcome in "$QUALIFICATION" "$BINDING" "$PIPELINE" "$UPLOAD_CANDIDATE" "$UPLOAD_BINDING" "$UPLOAD_PIPELINE" "$UPLOAD_LOG" "$UPLOAD_CLEANUP"; do
+            test "$outcome" = success
+          done
+          poetry run python -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
   checks:
     name: checks
     if: always()
-    needs: [test]
+    needs: [test, backend-compat]
     runs-on: ubuntu-latest
     steps:
-      - name: All matrix legs must pass
-        run: test "${{ needs.test.result }}" = "success"
+      - id: required
+        name: All required jobs must pass
+        env:
+          TEST: ${{ needs.test.result }}
+          BACKEND: ${{ needs.backend-compat.result }}
+        run: |
+          test "$TEST" = success
+          test "$BACKEND" = success

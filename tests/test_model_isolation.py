@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import os
 import signal
@@ -17,6 +16,8 @@ from .model_helpers import (
     REPO_ID,
     SILERO_RELEASE_URL,
     model_module,
+    silero_writer,
+    snapshot_fake,
     write_files,
 )
 
@@ -126,12 +127,14 @@ os.kill(os.getpid(), signal.SIGTERM)
     def interrupted_snapshot(
         *,
         repo_id: str,
+        revision: str,
         allow_patterns: list[str],
         local_files_only: bool,
         cache_dir: Path | None = None,
     ) -> str:
         assert cache_dir is None
         assert repo_id == REPO_ID
+        assert revision == "2bda32ec70b097a55adaa07d9a7173915b43cc78"
         assert tuple(allow_patterns) == PARAKEET_NAMES
         online_calls.append(local_files_only)
         if local_files_only:
@@ -217,8 +220,8 @@ print(json.dumps(paths, sort_keys=True))
     assert not external.exists()
 
 
-def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
-    # Given: an incomplete local cache and valid online floating result.
+def test_exact_revision_when_local_resolution_falls_back_online(tmp_path: Path) -> None:
+    # Given: an incomplete local cache and valid online result.
     model = model_module()
     local = tmp_path / "local"
     online = tmp_path / "online"
@@ -231,28 +234,56 @@ def test_no_revision_or_checksum_pin_exists(tmp_path: Path) -> None:
         calls.append(kwargs)
         return str(local if kwargs["local_files_only"] else online)
 
-    # When: floating resolution falls back online.
-    model.resolve_bundle(
+    # When: resolution falls back online.
+    bundle = model.resolve_bundle(
         _snapshot_download=snapshot_download,
         _silero_cache_path=silero,
+        _silero_expected_sha256=hashlib.sha256(b"vad").hexdigest(),
     )
 
-    # Then: the Hub call has only the contract keys and production has no checksum pin.
+    # Then: the Hub call has only the contract keys.
+    assert bundle.source == "cache+download"
     assert calls == [
         {
             "repo_id": REPO_ID,
+            "revision": "2bda32ec70b097a55adaa07d9a7173915b43cc78",
             "allow_patterns": list(PARAKEET_NAMES),
             "local_files_only": True,
             "cache_dir": None,
         },
         {
             "repo_id": REPO_ID,
+            "revision": "2bda32ec70b097a55adaa07d9a7173915b43cc78",
             "allow_patterns": list(PARAKEET_NAMES),
             "local_files_only": False,
             "cache_dir": None,
         },
     ]
-    source = inspect.getsource(model)
-    assert "revision=" not in source
-    assert "sha256" not in source.lower()
+
+
+@pytest.mark.parametrize("previous", [None, b"old-corrupt-final"])
+def test_contract_hash_rejects_staged_bytes_when_download_returns_success(
+    tmp_path: Path, previous: bytes | None,
+) -> None:
+    model = model_module()
+    snapshot = tmp_path / "snapshot"
+    write_files(snapshot, PARAKEET_NAMES)
+    downloader, _calls = snapshot_fake(snapshot)
+    final = tmp_path / "silero_vad.onnx"
+    if previous is not None:
+        final.write_bytes(previous)
+    staged: list[Path] = []
+
+    with pytest.raises(model.ModelEnvironmentError, match="SHA-256") as captured:
+        model.resolve_bundle(
+            _snapshot_download=downloader,
+            _silero_cache_path=final,
+            _silero_downloader=silero_writer(b"wrong-download", staged),
+        )
+
+    assert len(staged) == 1
+    assert captured.value.path == staged[0]
+    assert "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6" in captured.value.reason
+    assert (final.read_bytes() if final.exists() else None) == previous
+    assert not staged[0].exists()
     assert model.SILERO_URL == SILERO_RELEASE_URL
