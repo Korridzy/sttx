@@ -24,7 +24,7 @@ UPLOADS: Final = tuple(f"upload_{name}" for name in ("candidate", "binding", "pi
 CHECKOUT_ACTION: Final = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 SETUP_PYTHON_ACTION: Final = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 UPLOAD_ACTION: Final = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-DOWNLOAD_ACTION: Final = "actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0"
+DOWNLOAD_ACTION: Final = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 PUBLISH_ACTION: Final = "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
 YamlValue = str | list["YamlValue"] | dict[str, "YamlValue"]
 
