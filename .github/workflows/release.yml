@@ -75,7 +75,7 @@ jobs:
           python3 -I -S -B scripts/backend_change_detector.py --base "$GITHUB_SHA" --head "$GITHUB_SHA" --root "$GITHUB_WORKSPACE"
           python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
@@ -168,7 +168,7 @@ jobs:
       id-token: write
     steps:
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.qualify.outputs.dist-id }}
           path: dist/
@@ -184,7 +184,7 @@ jobs:
       contents: write
     steps:
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.publish.outputs.dist-id }}
           path: dist/
