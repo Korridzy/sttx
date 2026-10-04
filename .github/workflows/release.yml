@@ -1,14 +1,15 @@
-name: Release
+name: Download artifact upgrade acceptance
 
 on:
   push:
-    tags: ["v*"]
+    branches: ["verify/pr-5-download-artifact-v8-20261004"]
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: ${{ false }}
     name: build
     runs-on: ubuntu-latest
     outputs:
@@ -193,3 +194,92 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"
+  artifact_acceptance:
+    name: Full acceptance and artifact handoff
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      POETRY_VIRTUALENVS_IN_PROJECT: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 32f1178ad2e7d01e4b953395d46e586ba433ef7a
+      - name: Install native tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg strace
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --map-root-user --net -- true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12.3"
+      - name: Install Poetry
+        run: pipx install poetry==2.4.1
+      - name: Install dependencies
+        run: poetry install --no-interaction
+      - name: Poetry check
+        run: poetry check
+      - name: Run the complete suite
+        run: poetry run pytest -q
+      - name: Compile check
+        run: poetry run python -m compileall -q src tests
+      - name: CLI checks
+        run: |
+          poetry run sttx --help
+          poetry run sttx --version
+      - name: Build distributions
+        run: poetry build
+      - id: dist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+      - id: candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-candidate
+          path: tests/fixtures/output_transcript.json
+          if-no-files-found: error
+      - id: empty
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: backend-empty
+          path: tests/__init__.py
+          if-no-files-found: error
+      - name: Download distributions by artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.dist.outputs.artifact-id }}
+          path: ${{ runner.temp }}/pr5-dist
+          merge-multiple: true
+      - name: Download the JSON artifact by ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.artifact-id }}
+          path: ${{ runner.temp }}/pr5-json
+          merge-multiple: true
+      - name: Download the empty artifact by ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.empty.outputs.artifact-id }}
+          path: ${{ runner.temp }}/pr5-empty
+          merge-multiple: true
+      - name: Verify artifact bytes and file layout
+        run: |
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          test "$(find "$RUNNER_TEMP/pr5-dist" -maxdepth 1 -type f | wc -l)" -eq 2
+          for file in dist/*; do
+            cmp "$file" "$RUNNER_TEMP/pr5-dist/${file##*/}"
+          done
+          cmp tests/fixtures/output_transcript.json "$RUNNER_TEMP/pr5-json/output_transcript.json"
+          test ! -s tests/__init__.py
+          test -f "$RUNNER_TEMP/pr5-empty/__init__.py"
+          test ! -s "$RUNNER_TEMP/pr5-empty/__init__.py"
+          cmp tests/__init__.py "$RUNNER_TEMP/pr5-empty/__init__.py"
+          printf 'ARTIFACT_HANDOFF_OK\n'
