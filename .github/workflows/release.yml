@@ -30,7 +30,7 @@ jobs:
         name: Build distributions
         run: poetry build
       - id: dist
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
@@ -101,35 +101,35 @@ jobs:
         run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"'
       - id: upload_candidate
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-candidate
           path: ${{ env.EVIDENCE }}/release-candidate.json
           if-no-files-found: error
       - id: upload_binding
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binding
           path: ${{ env.EVIDENCE }}/release-binding.json
           if-no-files-found: error
       - id: upload_pipeline
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-pipeline
           path: ${{ env.EVIDENCE }}/release-pipeline.json
           if-no-files-found: error
       - id: upload_log
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-log
           path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
           if-no-files-found: error
       - id: upload_cleanup
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-cleanup
           path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
