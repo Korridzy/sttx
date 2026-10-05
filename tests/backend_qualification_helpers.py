@@ -87,7 +87,7 @@ def candidates(root: Path) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
         "model": {"repo": settings["parakeet_repo_id"], "revision": settings["parakeet_revision"],
                   "sha256": {**settings["parakeet_sha256"], settings["silero_filename"]: settings["silero_sha256"]}},
         "dependencies": {"sherpa-onnx": "1.13.8", "sherpa-onnx-bin": "1.13.8",
-                         "huggingface-hub": "1.31.0", "numpy": "2.4.6"},
+                         "huggingface-hub": "2.1.1", "numpy": "2.4.6"},
         "fixture": {"repo": settings["fixture_repo_id"], "revision": settings["fixture_revision"],
                     "name": settings["fixture_filename"], "sha256": settings["fixture_sha256"]},
         "platform": {"system": platform.system(), "machine": platform.machine()},
@@ -122,7 +122,7 @@ def observation_case() -> tuple[schema.Observations, schema.Expectations]:
             "sha256": {**contract["parakeet_sha256"], contract["silero_filename"]: contract["silero_sha256"]}},
         fixture={"repo": contract["fixture_repo_id"], "revision": contract["fixture_revision"],
             "name": contract["fixture_filename"], "sha256": contract["fixture_sha256"]},
-        dependencies={"huggingface-hub": "1.31.0", "numpy": "2.4.6", "sherpa-onnx": "1.13.8",
+        dependencies={"huggingface-hub": "2.1.1", "numpy": "2.4.6", "sherpa-onnx": "1.13.8",
                       "sherpa-onnx-bin": "1.13.8"},
         platform={"system": "Linux", "machine": "x86_64"}, probe_version=contract["probe_version"],
         quantum_us=80_000, max_overhang_us=1_000_000, fingerprint="f" * 64)
