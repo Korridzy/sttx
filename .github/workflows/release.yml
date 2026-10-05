@@ -1,31 +1,56 @@
-name: Release
+name: Qualified backend acceptance
 
 on:
   push:
-    tags: ["v*"]
+    branches: ["verify/pr-12-qualified-backend-20261005"]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: build
+    name: Full suite and exact wheel build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      POETRY_VIRTUALENVS_IN_PROJECT: "true"
     outputs:
       dist-id: ${{ steps.dist.outputs.artifact-id }}
     steps:
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
+          ref: 4ba886275eb2a436320524221b1b9415da5a3178
+      - name: Install native tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg strace
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --map-root-user --net -- true
       - name: Install Poetry
         run: pipx install poetry==2.4.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.13"
-      - id: tag
-        name: Verify release tag matches package version
-        run: test "$GITHUB_REF_NAME" = "v$(poetry version --short)"
+          python-version: "3.11"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12.3"
+      - name: Install dependencies
+        run: poetry install --no-interaction
+      - name: Poetry check
+        run: poetry check
+      - name: Verify qualified baseline
+        run: poetry run python -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
+      - name: Run the complete suite
+        run: poetry run pytest -q
+      - name: Compile check
+        run: poetry run python -m compileall -q src tests
+      - name: CLI checks
+        run: |
+          poetry run sttx --help
+          poetry run sttx --version
       - id: build
         name: Build distributions
         run: poetry build
@@ -52,7 +77,7 @@ jobs:
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
+          ref: 4ba886275eb2a436320524221b1b9415da5a3178
       - id: system
         name: Install native tools
         run: |
@@ -72,7 +97,7 @@ jobs:
       - id: detect
         name: Verify checkout backend identity
         run: |
-          python3 -I -S -B scripts/backend_change_detector.py --base "$GITHUB_SHA" --head "$GITHUB_SHA" --root "$GITHUB_WORKSPACE"
+          python3 -I -S -B scripts/backend_change_detector.py --base "4ba886275eb2a436320524221b1b9415da5a3178" --head "4ba886275eb2a436320524221b1b9415da5a3178" --root "$GITHUB_WORKSPACE"
           python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
       - id: dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -156,6 +181,7 @@ jobs:
             '.venv == $venv and .executable == $executable and .fingerprint == $fingerprint and .gate.verdict == "pass"' \
             "$EVIDENCE/release-pipeline.json"
   publish:
+    if: ${{ false }}
     name: publish
     needs: [qualify]
     runs-on: ubuntu-latest
