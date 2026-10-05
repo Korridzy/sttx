@@ -216,7 +216,7 @@ wheels, caches, and lockfiles are not repository deliverables.
 
 Normal fresh installations resolve the four exact direct runtime pins in
 `pyproject.toml`: `sherpa-onnx==1.13.8`, `sherpa-onnx-bin==1.13.8`,
-`huggingface-hub==1.31.0`, and `numpy==2.4.6`. This is not a lock of every
+`huggingface-hub==2.1.1`, and `numpy==2.4.6`. This is not a lock of every
 transitive dependency or a promise of identical numerics on every CPU.
 
 The qualification fingerprint includes sorted direct dependencies, the backend
