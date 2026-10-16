@@ -62,20 +62,20 @@ def assert_runtime_pins(requirements: Sequence[str]) -> None:
         requirement.replace(" ", "").replace("(", "").replace(")", "")
         for requirement in requirements
     ) == [
-        "huggingface-hub==1.29.0",
+        "huggingface-hub==2.1.1",
         "numpy==2.4.6",
-        "sherpa-onnx-bin==1.13.6",
-        "sherpa-onnx==1.13.6",
+        "sherpa-onnx-bin==1.13.8",
+        "sherpa-onnx==1.13.8",
     ]
 
 
 @pytest.mark.parametrize("requirement", ["numpy", "numpy==2.5.2", "numpy>=2.4.6"])
 def test_runtime_pins_reject_mismatched_requirement(requirement: str) -> None:
     requirements = [
-        "huggingface-hub==1.29.0",
+        "huggingface-hub==2.1.1",
         requirement,
-        "sherpa-onnx==1.13.6",
-        "sherpa-onnx-bin==1.13.6",
+        "sherpa-onnx==1.13.8",
+        "sherpa-onnx-bin==1.13.8",
     ]
 
     with pytest.raises(AssertionError):

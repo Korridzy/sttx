@@ -30,7 +30,7 @@ jobs:
         name: Build distributions
         run: poetry build
       - id: dist
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
@@ -75,7 +75,7 @@ jobs:
           python3 -I -S -B scripts/backend_change_detector.py --base "$GITHUB_SHA" --head "$GITHUB_SHA" --root "$GITHUB_WORKSPACE"
           python3 -I -S -B scripts/compute_backend_fingerprint.py --check tests/integration/qualified_backend.json
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.build.outputs.dist-id }}
           path: dist/
@@ -101,35 +101,35 @@ jobs:
         run: '"$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"'
       - id: upload_candidate
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-candidate
           path: ${{ env.EVIDENCE }}/release-candidate.json
           if-no-files-found: error
       - id: upload_binding
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binding
           path: ${{ env.EVIDENCE }}/release-binding.json
           if-no-files-found: error
       - id: upload_pipeline
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-pipeline
           path: ${{ env.EVIDENCE }}/release-pipeline.json
           if-no-files-found: error
       - id: upload_log
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-log
           path: ${{ env.EVIDENCE }}/task-10-sttx-python-transcriber.log
           if-no-files-found: error
       - id: upload_cleanup
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-cleanup
           path: ${{ env.EVIDENCE }}/task-10-cleanup-receipt.json
@@ -168,7 +168,7 @@ jobs:
       id-token: write
     steps:
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.qualify.outputs.dist-id }}
           path: dist/
@@ -184,7 +184,7 @@ jobs:
       contents: write
     steps:
       - id: dist
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.publish.outputs.dist-id }}
           path: dist/
