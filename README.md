@@ -80,7 +80,7 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-ts] [-v] [--debug] [--log-forma
   `elapsed_seconds` fields plus event-specific data such as `stage`,
   `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
   for machine-consumable pipeline telemetry.
-- `--version` — print `sttx 0.1.3` and exit.
+- `--version` — print `sttx 0.1.3` and exit. <!-- x-release-please-version -->
 
 There is no language option: the model reports a language when available and
 the JSON writer falls back to `"auto"`.
@@ -405,84 +405,125 @@ chain `build -> qualify -> publish -> github-release`; there is no rebuild.
 OIDC `id-token: write` is confined to publish under the `pypi` environment, and
 `contents: write` to the GitHub release job with `GH_TOKEN` bound to the workflow
 token. Failed qualification blocks publication. These are implemented workflow
-contracts, not evidence of hosted execution. Local verification is complete,
-including bootstrap C1/C2/C3 and the offline plain wheel release mirror. Final
-F1 through F4 verification and authorized hosted PR/tag execution remain
-outstanding. No tag or publication is part of local qualification.
+contracts, not evidence of hosted execution. No tag or publication is part of
+local qualification.
 
-### Releasing from a validated branch
+### Release Please maintainer setup
 
-This procedure records local validation. It does not provide hosted evidence.
-The committed baseline was produced locally on CPython 3.12.3. The PR
-`backend-compat` slow path reruns qualification on CPython 3.13, as
-`.github/workflows/ci.yml:89-93` specifies. Identity or behavior drift between
-interpreters fails the PR and requires a fresh local cycle. The hosted evidence
-contract also requires `unshare` to work on the runner.
+Release Please only opens or updates one release PR against `main`, containing
+the proposed version and changelog. It does not create tags, GitHub releases,
+or PyPI publications. The reviewed baseline
+`cb158c19149795d5a98cb3e83bf2c0f8c9a3024a` is both `bootstrap-sha` and the
+temporary `last-release-sha`, with manifest version `0.1.3`. Together they
+prevent historical changelog regeneration: the existing `v0.1.3` tag is outside
+main's ancestry, so bootstrap alone is insufficient. Existing `v0.1.3` is
+immutable; do not move it to repair discovery. After the first correctly tagged
+main release is discoverable, remove the temporary `last-release-sha` override
+in a reviewed change so future discovery uses the actual release boundary.
 
-1. Run the local gate from the repository root before pushing. It matches the
-   todo 6 release mirror commands. Both `jq` checks must print `true`, and every
-   command must succeed.
+Before enabling the workflow, a repository administrator must:
 
-   ```bash
-   poetry run python -I -S -B scripts/backend_change_detector.py --base origin/main --head HEAD --root "$PWD" | jq -e '.first_introduction==true and .head_version==1 and .record_changed==true and .needs_qualification==true and .fingerprint_mismatch==false'
-   poetry run python -I -S -B scripts/backend_change_detector.py --base "$(git rev-parse HEAD)" --head "$(git rev-parse HEAD)" --root "$PWD" | jq -e '.needs_qualification==false and .fingerprint_mismatch==false and .first_introduction==false'
-   poetry run pytest -q -m "not integration"
-   poetry check
-   poetry run python -m compileall -q src tests
-   poetry build
-   poetry run pytest tests/test_backend_fingerprint.py -q -k "existing_source_changes and (model or audio or asr_events)"
-   BUILD_OUT=$(mktemp -d /tmp/sttx-build.XXXXXX)
-   RELEASE_TMP=$(mktemp -d /tmp/sttx-release.XXXXXX)
-   export WHEEL_VENV="$RELEASE_TMP/wheel-venv"
-   EVIDENCE="$RELEASE_TMP/evidence"
-   mkdir -p "$EVIDENCE"
-   test ! -e "$WHEEL_VENV"
-   poetry build --output "$BUILD_OUT"
-   wheels=("$BUILD_OUT"/*.whl); test "${#wheels[@]}" = 1
-   test -f "${wheels[0]}"
-   poetry run python -m venv "$WHEEL_VENV"
-   "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
-   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.3"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
-   "$WHEEL_VENV/bin/python" --version
-   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"
-   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"
-   "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_real_pipeline.py -m integration -q --identity-output="$EVIDENCE/release-pipeline.json"
-   jq -e --arg venv "$WHEEL_VENV" --arg executable "$WHEEL_VENV/bin/python" --arg fingerprint "$(poetry run python -I -S -B scripts/compute_backend_fingerprint.py)" '.venv == $venv and .executable == $executable and .fingerprint == $fingerprint and .gate.verdict == "pass"' "$EVIDENCE/release-pipeline.json"
-   find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
-   rm -rf "$BUILD_OUT" "$RELEASE_TMP" dist
-   git status --porcelain --untracked-files=no
-   git diff --quiet && git diff --cached --quiet
-   ```
-
-2. Push the validated branch.
+1. Create a GitHub App, or approve an existing App with the same restricted
+   access. Install it using **Only select repositories**, selecting only
+   `Korridzy/sttx`. Grant repository **Metadata: read**, **Contents: write**,
+   **Pull requests: write**, and **Issues: write** (for release labels).
+   Do not grant protection/ruleset bypass, enable auto-merge, or give the App
+   publication credentials.
+2. Generate a PEM private key in the App settings. Store the App's **client
+   ID** (not its installation ID) in the repository Actions variable
+   `RELEASE_PLEASE_APP_CLIENT_ID`, and the PEM contents in the repository Actions
+   secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. With an authorized maintainer's
+   `gh` login, replace the example values below; do not commit the key:
 
    ```bash
-   git push -u origin token-out-of-chunk
+   gh variable set RELEASE_PLEASE_APP_CLIENT_ID --repo Korridzy/sttx --body '<APP_CLIENT_ID>'
+   gh secret set RELEASE_PLEASE_APP_PRIVATE_KEY --repo Korridzy/sttx < /secure/path/release-please.private-key.pem
+   gh variable list --repo Korridzy/sttx
+   gh secret list --repo Korridzy/sttx
    ```
 
-3. Open a PR from `token-out-of-chunk` against `main`. Because the base has no
-   contract, the PR `backend-compat` job takes the first introduction slow path
-   with real model downloads under a 60 minute timeout.
+   The initial repository variable and secret inventories were both empty;
+   setup is required, not already verified. The pinned
+   `actions/create-github-app-token` action creates a repository-scoped
+   installation token automatically for each run and revokes it in its
+   post-job step. Do not store a long-lived installation token. The App is
+   deliberate: `GITHUB_TOKEN`-created PRs do not automatically run normal PR CI
+   (current GitHub behavior can require maintainer approval); the App allows
+   the generated PR to trigger CI without that extra approval.
+3. Preserve normal branch protections and required checks. An authorized,
+   controlled hosted run must verify App authentication, one release PR,
+   synchronized versions, PR-triggered CI, and no automatic tag/release/publish.
+   Parsed configuration and local tests, including the actual Release Please
+   library against controlled GitHub fixtures, are local evidence only; they
+   do not prove App installation, secret availability, or hosted execution.
 
-4. Wait for `test (3.11|3.12|3.13)`, `backend-compat`, and the stable `checks`
-   job to succeed.
+### Reviewed release PR to maintainer publication
 
-5. Merge the PR after those jobs succeed.
+Use Conventional Commit PR titles and preserve them as squash-merge titles:
+`fix: ...` proposes a patch, `feat: ...` a minor, and `docs: ...` or `chore: ...`
+alone do not propose a release unless accompanied by a releaseable change.
+Mark breaking changes with `!` or a `BREAKING CHANGE:` footer in the resulting
+commit. The explicit pre-1.0 policy makes breaking changes minor, not major:
+from the existing `0.1.3`, a fix becomes `0.1.4`, while a feature or breaking
+change becomes `0.2.0`. After 1.0, breaking changes bump the major version.
 
-6. Tag the merge commit and push that tag. Replace `<merge-commit>` with the
-   merge commit SHA. The tag must equal `v$(poetry version --short)`. The
-   `v0.1.1` tag already exists on the remote and cannot be reused.
+1. Merge reviewed changes to `main`. Release Please creates or updates its
+   single release PR. Review its changelog and synchronized versions in
+   `pyproject.toml`, `src/sttx/__init__.py`, packaging expectations, README CLI
+   example, and manifest. The root Python strategy updates project metadata;
+   `x-release-please-version` annotations keep generic extra-file values
+   synchronized without weakening exact wheel inventory or metadata tests.
+   Historical references to existing releases are not updater targets.
+2. Validate the release PR locally with the development checks above, including
+   `poetry run pytest -q tests/test_packaging.py`. Do not assume a backend
+   first-introduction result: the current detector decides whether qualification
+   is needed. Backend-affecting changes still require the full local
+   qualification cycle above; the hosted slow path runs on Python 3.13 and
+   requires working `unshare`. Cross-interpreter identity or behavior drift must
+   be resolved, not bypassed.
+3. Require the unchanged Python 3.11-3.13 `test` matrix, `backend-compat`, and
+   stable `checks` job on the bot PR. Review and merge to `main` only when green
+   under normal protections. The App has no bypass and there is no auto-merge.
+4. A maintainer, not Release Please, verifies the merged commit on `main`,
+   checks the version is new, then tags that exact commit. From a clean
+   checkout, replace `<release-pr-merge-sha>` with the reviewed merge SHA:
 
    ```bash
-   git tag v0.1.3 <merge-commit> && git push origin v0.1.3
+   set -eu
+   git fetch origin main --tags
+   git switch main
+   git pull --ff-only origin main
+   test -z "$(git status --porcelain)"
+   MERGE_SHA='<release-pr-merge-sha>'
+   test "$(git rev-parse HEAD)" = "$MERGE_SHA"
+   VERSION=$(poetry version --short)
+   ! git rev-parse --verify --quiet "refs/tags/v$VERSION"
+   git tag "v$VERSION" "$MERGE_SHA"
+   git push origin "v$VERSION"
    ```
 
-7. The tag starts `build -> qualify -> publish -> github-release`. The `publish`
-   job runs under the `pypi` environment with `id-token: write`. A failed
-   qualification blocks publication.
+   Stop if any check fails. Never retag `v0.1.3`, reuse a published version,
+   or publish from a feature branch. PyPI does not permit version reuse;
+   a replacement publication needs a new reviewed version and new tag.
+5. Monitor the existing `build -> qualify -> publish -> github-release` workflow.
+   It qualifies and publishes the same built distributions, with no rebuild.
+   A failed qualification blocks publication; environment approvals and normal
+   release protections still apply.
+6. Only after successful maintainer publication and its GitHub release, clear
+   `autorelease: pending` from that merged release PR and apply
+   `autorelease: tagged`. Release Please otherwise blocks new PRs while a
+   merged release PR is pending; its release-creation phase is intentionally
+   disabled here, so it cannot perform this label transition itself:
 
-8. PyPI never permits reusing a version number. A failed publish requires a new
-   patch version and a new tag.
+   ```bash
+   RELEASE_PR='<release-pr-number>'
+   gh pr edit "$RELEASE_PR" --repo Korridzy/sttx --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'
+   ```
+
+   Do not clear pending merely because the PR merged or a tag was pushed.
+   On failure, retain it while investigating publication. Label cleanup alone
+   does not trigger this workflow; run Release Please manually after cleanup,
+   or let the next push to `main` trigger it.
 
 ## Attribution and licensing
 

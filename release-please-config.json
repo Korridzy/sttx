@@ -1,0 +1,15 @@
+{
+  "bootstrap-sha": "cb158c19149795d5a98cb3e83bf2c0f8c9a3024a",
+  "last-release-sha": "cb158c19149795d5a98cb3e83bf2c0f8c9a3024a",
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "skip-github-release": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "extra-files": ["README.md", "tests/test_packaging.py"]
+    }
+  }
+}
