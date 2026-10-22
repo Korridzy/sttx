@@ -80,7 +80,7 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-ts] [-v] [--debug] [--log-forma
   `elapsed_seconds` fields plus event-specific data such as `stage`,
   `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
   for machine-consumable pipeline telemetry.
-- `--version` — print `sttx 0.1.2` and exit.
+- `--version` — print `sttx 0.1.3` and exit.
 
 There is no language option: the model reports a language when available and
 the JSON writer falls back to `"auto"`.
@@ -442,7 +442,7 @@ contract also requires `unshare` to work on the runner.
    test -f "${wheels[0]}"
    poetry run python -m venv "$WHEEL_VENV"
    "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
-   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.2"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
+   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.3"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
    "$WHEEL_VENV/bin/python" --version
    "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"
    "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"
@@ -474,7 +474,7 @@ contract also requires `unshare` to work on the runner.
    `v0.1.1` tag already exists on the remote and cannot be reused.
 
    ```bash
-   git tag v0.1.2 <merge-commit> && git push origin v0.1.2
+   git tag v0.1.3 <merge-commit> && git push origin v0.1.3
    ```
 
 7. The tag starts `build -> qualify -> publish -> github-release`. The `publish`
