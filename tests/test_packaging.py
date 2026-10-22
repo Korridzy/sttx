@@ -14,8 +14,10 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_WHEEL = "sttx-0.1.3-py3-none-any.whl"  # x-release-please-version
-DIST_INFO = "sttx-0.1.3.dist-info"  # x-release-please-version
+# Keep wheel tags outside the generic updater's semver prerelease match.
+EXPECTED_VERSION = "0.1.3"  # x-release-please-version
+EXPECTED_WHEEL = f"sttx-{EXPECTED_VERSION}-py3-none-any.whl"
+DIST_INFO = f"sttx-{EXPECTED_VERSION}.dist-info"
 EXPECTED_SOURCES = {
     "sttx/__init__.py",
     "sttx/asr.py",
@@ -92,7 +94,7 @@ def test_pep_621_metadata_defines_supported_console_distribution() -> None:
 
     # Then: the supported distribution contract is explicit and version bounded.
     assert project["name"] == "sttx"
-    assert project["version"] == "0.1.3"  # x-release-please-version
+    assert project["version"] == EXPECTED_VERSION
     assert project["requires-python"] == ">=3.11,<3.14"
     assert scripts == {"sttx": "sttx.cli:main"}
     assert_runtime_pins(project["dependencies"])
@@ -197,7 +199,7 @@ def test_built_wheel_has_pure_tag_entry_point_and_exact_inventory(
     assert wheel_metadata["Root-Is-Purelib"] == "true"
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
     assert package_metadata["Name"] == "sttx"
-    assert package_metadata["Version"] == "0.1.3"  # x-release-please-version
+    assert package_metadata["Version"] == EXPECTED_VERSION
     assert package_metadata["Requires-Python"] == ">=3.11,<3.14"
     assert package_metadata["License-Expression"] == "GPL-3.0-only"
     assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE.md"]
