@@ -203,9 +203,12 @@ def resolve_bundle_cancellable(
         process.start()
         while process.is_alive():
             try:
-                return _bundle_from_message(messages.get(timeout=0.1))
+                message = messages.get(timeout=0.1)
             except queue.Empty:
-                pass
+                continue
+            # The result can arrive before the worker finishes interpreter shutdown.
+            process.join(timeout=5)
+            return _bundle_from_message(message)
         try:
             return _bundle_from_message(messages.get_nowait())
         except queue.Empty as error:

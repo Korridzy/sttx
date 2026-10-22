@@ -138,7 +138,7 @@ def _run_pipeline(
         check = read_transcript(json_path, txt_path)
         assert check.text.strip(), result.to_json()
         assert check.monotonic
-        assert check.json_txt_equal
+        assert check.txt_matches_segments
         format_results[suffix] = {
             "command": result.to_json(),
             "json": str(json_path),

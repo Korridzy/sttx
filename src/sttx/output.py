@@ -5,7 +5,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, Protocol, TypedDict
 
 JSON_SUFFIX: Final = ".json"
 TXT_SUFFIX: Final = ".txt"
@@ -92,8 +92,42 @@ class OutputPaths:
     txt_path: Path
 
 
+class OutputWriter(Protocol):
+    def __call__(
+        self,
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None: ...
+
+
 def normalize_segment_text(text: str) -> str:
     return " ".join(text.split())
+
+
+def format_timestamp(seconds: float) -> str:
+    total_milliseconds = round(seconds * 1_000)
+    total_seconds, milliseconds = divmod(total_milliseconds, 1_000)
+    total_minutes, seconds_part = divmod(total_seconds, 60)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}.{milliseconds:03d}"
+
+
+def timestamped_text(transcript: Transcript) -> str:
+    return "\n".join(
+        f"[{format_timestamp(segment.start)} --> {format_timestamp(segment.end)}] {text}"
+        for segment in transcript.segments
+        if (text := normalize_segment_text(segment.text))
+    )
+
+
+def plain_text(transcript: Transcript) -> str:
+    return "\n".join(
+        text
+        for segment in transcript.segments
+        if (text := normalize_segment_text(segment.text))
+    )
 
 
 def output_paths(
@@ -112,12 +146,18 @@ def output_paths(
     )
 
 
-def write_outputs(transcript: Transcript, paths: OutputPaths) -> None:
+def write_outputs(
+    transcript: Transcript,
+    paths: OutputPaths,
+    *,
+    timestamps: bool = False,
+) -> None:
     json_tmp: Path | None = None
     txt_tmp: Path | None = None
     try:
         json_tmp = write_temp(paths.json_path, json_payload(transcript))
-        txt_tmp = write_temp(paths.txt_path, transcript.text)
+        txt_contents = timestamped_text(transcript) if timestamps else plain_text(transcript)
+        txt_tmp = write_temp(paths.txt_path, txt_contents)
         replace_temp(json_tmp, paths.json_path)
         json_tmp = None
         replace_temp(txt_tmp, paths.txt_path)

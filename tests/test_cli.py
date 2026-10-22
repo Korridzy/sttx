@@ -111,6 +111,15 @@ def _fake_dependencies(
     )
 
 
+def _discard_outputs(
+    transcript: Transcript,
+    paths: OutputPaths,
+    *,
+    timestamps: bool = False,
+) -> None:
+    del transcript, paths, timestamps
+
+
 def test_parser_contract() -> None:
     # Given: the public parser builder.
     from sttx.cli import CliRuntimeError, build_parser
@@ -136,6 +145,15 @@ def test_parser_contract() -> None:
     assert namespace.outdir == Path("results")
     assert namespace.model_dir == Path("models")
     assert namespace.verbose == 1
+    assert parser.parse_args(["media.mp4"]).ts is False
+    assert parser.parse_args(["media.mp4", "-ts"]).ts is True
+    assert parser.parse_args(["media.mp4", "--timestamp"]).ts is True
+    try:
+        _ = parser.parse_args(["media.mp4", "--ts"])
+    except CliRuntimeError:
+        pass
+    else:
+        pytest.fail("the retired --ts spelling must be rejected")
     assert parser.parse_args(["media.mp4"]).debug is False
     assert parser.parse_args(["media.mp4", "--debug"]).debug is True
     assert parser.parse_args(["media.mp4"]).log_format == "text"
@@ -189,7 +207,7 @@ def test_output_precedence_and_exact_paths(
         [str(media), "-o", "episode", "-d", "relative", "--model-dir", str(tmp_path)],
         _dependencies=_fake_dependencies(tmp_path),
         _output_paths=capture_paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -253,9 +271,15 @@ def test_stdout_contains_only_final_paths(
         events.append(f"paths:{input_path.name}:{outdir}:{name}:{cwd}")
         return paths
 
-    def write_outputs(transcript: Transcript, output: OutputPaths) -> None:
+    def write_outputs(
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None:
+        assert timestamps is False
         events.append(f"write:{transcript.text}")
-        assert output == paths
+        assert paths == expected_paths
 
     dependencies = RunnerDependencies(
         normalize_media=normalize,
@@ -266,6 +290,7 @@ def test_stdout_contains_only_final_paths(
     )
 
     # When: the dependency-injectable runner completes.
+    expected_paths = paths
     exit_code = run(
         [str(media), "-o", "episode", "-d", str(tmp_path), "--model-dir", str(tmp_path)],
         _dependencies=dependencies,
@@ -290,6 +315,48 @@ def test_stdout_contains_only_final_paths(
     ]
     assert prepared.cleanup_seen_after_transcription is False
     assert prepared.cleaned is True
+
+
+def test_timestamp_option_reaches_output_writer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a keyword-aware writer that records the selected timestamp mode.
+    from sttx.cli import run
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"media")
+    paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
+    timestamp_calls: list[bool] = []
+
+    def capture_timestamps(
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None:
+        del transcript
+        assert paths == expected_paths
+        timestamp_calls.append(timestamps)
+
+    # When: default and timestamp modes complete through the same writer seam.
+    expected_paths = paths
+    for arguments in ([], ["--timestamp"]):
+        exit_code = run(
+            [str(media), "--model-dir", str(tmp_path), *arguments],
+            _dependencies=_fake_dependencies(tmp_path),
+            _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
+            _write_outputs=capture_timestamps,
+            _cwd=tmp_path,
+        )
+
+        # Then: streams retain the success contract for each mode.
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+        assert captured.err == ""
+
+    assert timestamp_calls == [False, True]
 
 
 def test_verbose_prints_progress_to_stderr(
@@ -318,7 +385,7 @@ def test_verbose_prints_progress_to_stderr(
             normalize_media=normalize,
         ),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -373,7 +440,7 @@ def test_verbose_prints_transcription_progress_to_stderr(
         [str(media), "-v", "--model-dir", str(tmp_path)],
         _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -419,7 +486,7 @@ def test_verbose_redraws_transcription_progress_in_terminal(
         [str(media), "-v", "--model-dir", str(tmp_path)],
         _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -736,7 +803,7 @@ def test_json_log_format_emits_structured_progress_and_preserves_stdout(
         [str(media), "-v", "--log-format", "json", "--model-dir", str(tmp_path)],
         _dependencies=replace(_fake_dependencies(tmp_path), transcribe=transcribe),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -839,7 +906,7 @@ def test_debug_prints_internal_diagnostics_to_stderr(
             transcribe=transcribe_with_activity,
         ),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda _transcript, _paths: None,
+        _write_outputs=_discard_outputs,
         _cwd=tmp_path,
     )
 
@@ -874,7 +941,13 @@ def test_debug_prints_traceback_for_unexpected_write_failure(
     media.write_bytes(b"media")
     paths = OutputPaths(json_path=tmp_path / "episode.json", txt_path=tmp_path / "episode.txt")
 
-    def broken_write(_transcript: Transcript, _paths: OutputPaths) -> None:
+    def broken_write(
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None:
+        del transcript, paths, timestamps
         raise KeyError("staging metadata missing")
 
     # When: debug mode handles the failure boundary.
@@ -979,6 +1052,16 @@ def test_silence_warns_and_exits_zero(
     paths = OutputPaths(json_path=tmp_path / "silent.json", txt_path=tmp_path / "silent.txt")
     writes: list[Transcript] = []
 
+    def capture_write(
+        transcript: Transcript,
+        paths: OutputPaths,
+        *,
+        timestamps: bool = False,
+    ) -> None:
+        del paths
+        assert timestamps is False
+        writes.append(transcript)
+
     def transcribe_silence(
         _audio: FakePreparedAudio,
         *,
@@ -998,7 +1081,7 @@ def test_silence_warns_and_exits_zero(
             transcribe=transcribe_silence,
         ),
         _output_paths=lambda _input_path, _outdir, _name, _cwd: paths,
-        _write_outputs=lambda transcript, _paths: writes.append(transcript),
+        _write_outputs=capture_write,
         _cwd=tmp_path,
     )
 

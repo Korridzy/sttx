@@ -95,13 +95,97 @@ def test_formats_names_overwrite_schema_streams_and_cleanup(
         assert not result.prepared_path.exists()
         payload = read_payload(paths.json_path)
         assert payload == expected_payload(TEXT)
-        assert paths.txt_path.read_text(encoding="utf-8") == payload["text"]
+        assert paths.txt_path.read_text(encoding="utf-8") == "offline media contract"
         assert "stale" not in paths.json_path.read_text(encoding="utf-8")
         assert "stale" not in paths.txt_path.read_text(encoding="utf-8")
         assert staging_files(paths.json_path.parent) == []
 
     assert guarded_runtime.injected_recognizers == len(cases)
     assert guarded_runtime.injected_vads == len(cases)
+
+
+def test_timestamp_mode_writes_timestamped_txt_through_offline_cli(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    guarded_runtime: GuardCounters,
+    bundle: ModelBundle,
+) -> None:
+    # Given: an offline media fixture and timestamp output mode.
+    case = FormatCase(
+        ".wav",
+        Path("timestamp"),
+        "episode",
+        Path("timestamp/episode.json"),
+        Path("timestamp/episode.txt"),
+    )
+    media = generate_media(tmp_path, case)
+
+    # When: the real CLI path normalizes, transcribes, and writes the fixture.
+    result = run_success(
+        RunContext(media, case, tmp_path, bundle, guarded_runtime, False, True)
+    )
+
+    # Then: only TXT rendering changes and every offline/cleanup guard holds.
+    paths = expected_paths(tmp_path, case)
+    captured = capsys.readouterr()
+    assert result.exit_code == 0
+    assert result.json_path == paths.json_path
+    assert result.txt_path == paths.txt_path
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert captured.err == ""
+    assert read_payload(paths.json_path) == expected_payload(TEXT)
+    assert paths.txt_path.read_bytes() == (
+        b"[00:00:00.000 --> 00:00:01.000] offline media contract"
+    )
+    assert result.prepared_path is not None
+    assert not result.prepared_path.exists()
+    assert staging_files(paths.json_path.parent) == []
+    assert guarded_runtime.socket_attempts == 0
+    assert guarded_runtime.real_recognizers == 0
+    assert guarded_runtime.real_vads == 0
+    assert guarded_runtime.injected_recognizers == 1
+    assert guarded_runtime.injected_vads == 1
+
+
+def test_timestamp_mode_silence_preserves_empty_output_contract(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    guarded_runtime: GuardCounters,
+    bundle: ModelBundle,
+) -> None:
+    # Given: an offline media fixture whose injected transcription is silent.
+    case = FormatCase(
+        ".wav",
+        Path("timestamp-silence"),
+        "quiet",
+        Path("timestamp-silence/quiet.json"),
+        Path("timestamp-silence/quiet.txt"),
+    )
+    media = generate_media(tmp_path, case)
+
+    # When: the real CLI path runs silence with timestamp output enabled.
+    result = run_success(
+        RunContext(media, case, tmp_path, bundle, guarded_runtime, True, True)
+    )
+
+    # Then: silence remains a successful empty transcript with its warning.
+    paths = expected_paths(tmp_path, case)
+    captured = capsys.readouterr()
+    assert result.exit_code == 0
+    assert result.json_path == paths.json_path
+    assert result.txt_path == paths.txt_path
+    assert captured.out == f"{paths.json_path}\n{paths.txt_path}\n"
+    assert captured.err == "warning: no speech detected\n"
+    assert read_payload(paths.json_path) == expected_payload("")
+    assert paths.txt_path.read_bytes() == b""
+    assert result.prepared_path is not None
+    assert not result.prepared_path.exists()
+    assert staging_files(paths.json_path.parent) == []
+    assert guarded_runtime.socket_attempts == 0
+    assert guarded_runtime.real_recognizers == 0
+    assert guarded_runtime.real_vads == 0
+    assert guarded_runtime.injected_recognizers == 1
+    assert guarded_runtime.injected_vads == 1
 
 
 def test_error_and_silence_contracts(

@@ -54,6 +54,7 @@ from sttx.model import (
 from sttx.output import (
     OutputPathError,
     OutputPaths,
+    OutputWriter,
     OutputWriteError,
     Transcript,
     output_paths,
@@ -730,6 +731,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="use an offline local model bundle; it must contain all required assets",
     )
     parser.add_argument(
+        "-ts",
+        "--timestamp",
+        dest="ts",
+        action="store_true",
+        help="write each TXT line as [HH:MM:SS.mmm --> HH:MM:SS.mmm] text",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -760,7 +768,7 @@ def run(
     *,
     _dependencies: RunnerDependencies[PreparedAudioT, RecognizerT, VadT] | None = None,
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
-    _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
+    _write_outputs: OutputWriter = write_outputs,
     _cwd: Path | None = None,
 ) -> int:
     previous_handlers: dict[
@@ -808,7 +816,7 @@ def _run(
     *,
     _dependencies: RunnerDependencies[PreparedAudioT, RecognizerT, VadT],
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths] = output_paths,
-    _write_outputs: Callable[[Transcript, OutputPaths], None] = write_outputs,
+    _write_outputs: OutputWriter = write_outputs,
     _cwd: Path | None = None,
 ) -> int:
     parser = build_parser()
@@ -986,7 +994,7 @@ def _run(
         stage = "write"
         stage_started = time.perf_counter()
         progress.report("write outputs start", event="stage_started", stage=stage)
-        _write_outputs(transcript, paths)
+        _write_outputs(transcript, paths, timestamps=namespace.ts)
         progress.report("write outputs complete", event="stage_completed", stage=stage)
         progress.report_stage_duration(stage, stage_started)
     except OutputWriteError as error:
@@ -1091,7 +1099,7 @@ def _run_production(
     argv: Sequence[str] | None,
     *,
     _output_paths: Callable[[Path, Path | None, str | None, Path], OutputPaths],
-    _write_outputs: Callable[[Transcript, OutputPaths], None],
+    _write_outputs: OutputWriter,
     _cwd: Path | None,
 ) -> int:
     return _run(

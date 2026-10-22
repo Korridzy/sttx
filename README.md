@@ -50,7 +50,7 @@ Existing output files are replaced atomically.
 The complete public surface is:
 
 ```text
-sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {text,json}] [--version] media
+sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-ts] [-v] [--debug] [--log-format {text,json}] [--version] media
 ```
 
 - `media` — required positional path to one local audio/video file.
@@ -61,6 +61,9 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {tex
   resolved from the current directory; the default is `./transcriptions`.
 - `--model-dir DIR` — use a local, offline model bundle instead of
   acquiring model assets.
+- `-ts`, `--timestamp` — write each TXT line as
+  `[HH:MM:SS.mmm --> HH:MM:SS.mmm] text`.
+  This affects TXT contents only; JSON is unchanged.
 - `-v`, `--verbose` — write elapsed-time pipeline stage messages and live
   transcription progress to stderr. Text logs include a 20-character ASCII
   bar, processed audio position, real-time factor, estimated time remaining,
@@ -77,7 +80,7 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-v] [--debug] [--log-format {tex
   `elapsed_seconds` fields plus event-specific data such as `stage`,
   `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
   for machine-consumable pipeline telemetry.
-- `--version` — print `sttx 0.1.2` and exit.
+- `--version` — print `sttx 0.1.3` and exit.
 
 There is no language option: the model reports a language when available and
 the JSON writer falls back to `"auto"`.
@@ -150,10 +153,11 @@ qualification guarantees.
 
 ## Output files
 
-The JSON file is UTF-8, uses two-space indentation, and keeps non-ASCII text
-unescaped. Its `text` field is the segment text joined with single spaces.
-`duration`, `start`, and `end` are rounded to two decimal places; segment IDs
-start at zero.
+The JSON file is invariant whether or not you pass `-ts` or `--timestamp`. It is UTF-8, uses
+two-space indentation, and keeps non-ASCII text unescaped. Its `text` field is
+the segment text joined with single spaces. Every object in `segments` has
+numeric `start` and `end` fields, rounded to two decimal places. `duration` is
+also rounded to two decimal places, and segment IDs start at zero.
 
 For example, one short transcript may be:
 
@@ -174,15 +178,28 @@ For example, one short transcript may be:
 }
 ```
 
-The matching TXT file contains exactly the value of JSON `text`, with no
-additional newline or other bytes:
+Without `-ts` or `--timestamp`, the matching TXT file contains one normalized non-empty
+segment per line, with no trailing newline. JSON `text` remains the same segments joined
+with single spaces:
 
 ```text
 Hello world.
 ```
 
-Silence/no speech is a successful result with `text: ""`, an empty
-`segments` array, and `warning: no speech detected` on stderr.
+With `-ts` or `--timestamp`, TXT contains one normalized non-empty segment per line. Each line
+uses raw segment timing rounded to milliseconds; hours are unbounded and use at
+least two digits. The file has no trailing newline:
+
+```text
+[00:00:00.000 --> 00:00:03.200] Hello world.
+```
+
+`-ts` and `--timestamp` affect TXT contents only. They do not change JSON, including the
+top-level `text` field or the numeric `start` and `end` fields in `segments`.
+
+Silence/no speech is a successful result with `text: ""`, an empty `segments`
+array, and `warning: no speech detected` on stderr. In either TXT mode, it
+writes an empty TXT file.
 
 ## Development
 
@@ -425,7 +442,7 @@ contract also requires `unshare` to work on the runner.
    test -f "${wheels[0]}"
    poetry run python -m venv "$WHEEL_VENV"
    "$WHEEL_VENV/bin/python" -m pip install "${wheels[0]}" pytest
-   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.2"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
+   "$WHEEL_VENV/bin/python" -c 'import importlib.metadata, os, sys, sttx; from pathlib import Path; assert sys.prefix == os.environ["WHEEL_VENV"]; assert Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert importlib.metadata.version("sttx") == "0.1.3"; print(sttx.__file__); print(importlib.metadata.version("sttx"))'
    "$WHEEL_VENV/bin/python" --version
    "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_timing_qualification.py -m integration -q --qualification-output="$EVIDENCE/release-candidate.json"
    "$WHEEL_VENV/bin/python" -m pytest tests/integration/test_binding_contract.py -m integration -q --identity-output="$EVIDENCE/release-binding.json"
@@ -457,7 +474,7 @@ contract also requires `unshare` to work on the runner.
    `v0.1.1` tag already exists on the remote and cannot be reused.
 
    ```bash
-   git tag v0.1.2 <merge-commit> && git push origin v0.1.2
+   git tag v0.1.3 <merge-commit> && git push origin v0.1.3
    ```
 
 7. The tag starts `build -> qualify -> publish -> github-release`. The `publish`
