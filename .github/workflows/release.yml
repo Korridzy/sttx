@@ -209,11 +209,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --paginate --slurp)
-          matches=$(jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
+          matches=$(jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" \
+            --arg owner_id "$GITHUB_REPOSITORY_OWNER_ID" '
             [.[][] | select(.merged_at != null and .merge_commit_sha == $sha
               and .base.ref == "main" and .base.repo.full_name == $repo
               and .head.repo.full_name == $repo
-              and .head.ref == "release-please--branches--main" and .user.type == "Bot")]
+              and .head.ref == "release-please--branches--main" and (.user.id | tostring) == $owner_id)]
           ' <<< "$prs")
           count=$(jq 'length' <<< "$matches")
           if [[ "$count" == 0 ]]; then

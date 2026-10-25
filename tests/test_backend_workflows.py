@@ -321,24 +321,17 @@ def test_release_please_workflow_is_scoped_to_main_prs() -> None:
     items = job["steps"]
     assert isinstance(items, list)
     # Exact steps prohibit added merge, tag, release, or publication commands.
-    assert items == [
+    assert [{key: value for key, value in mapping(item).items() if key != "name"} for item in items] == [
         {
-            "uses": "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
-            "id": "app-token",
-            "with": {
-                "client-id": "${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}",
-                "private-key": "${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}",
-                "owner": "${{ github.repository_owner }}",
-                "repositories": "${{ github.event.repository.name }}",
-                "permission-contents": "write",
-                "permission-pull-requests": "write",
-                "permission-issues": "write",
-            },
+            "id": "token",
+            "shell": "bash",
+            "env": {"GH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN }}"},
+            "run": 'test -n "$GH_TOKEN"\nactor=$(gh api user --jq .id)\ntest "$actor" = "$GITHUB_REPOSITORY_OWNER_ID"\n',
         },
         {
             "uses": "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
             "with": {
-                "token": "${{ steps.app-token.outputs.token }}",
+                "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
                 "target-branch": "main",
                 "config-file": "release-please-config.json",
                 "manifest-file": ".release-please-manifest.json",

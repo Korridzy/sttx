@@ -424,46 +424,48 @@ immutable; do not move it to repair discovery. After the first correctly tagged
 main release is discoverable, remove the temporary `last-release-sha` override
 in a reviewed change so future discovery uses the actual release boundary.
 
-Before enabling the workflow, a repository administrator must:
+Before enabling the workflow:
 
-1. Create a GitHub App, or approve an existing App with the same restricted
-   access. Install it using **Only select repositories**, selecting only
-   `Korridzy/sttx`. Grant repository **Metadata: read**, **Contents: write**,
-   **Pull requests: write**, and **Issues: write** (for release labels).
-   Do not grant protection/ruleset bypass, enable auto-merge, or give the App
-   publication credentials.
-2. Generate a PEM private key in the App settings. Store the App's **client
-   ID** (not its installation ID) in the repository Actions variable
-   `RELEASE_PLEASE_APP_CLIENT_ID`, and the PEM contents in the repository Actions
-   secret `RELEASE_PLEASE_APP_PRIVATE_KEY`. With an authorized maintainer's
-   `gh` login, replace the example values below; do not commit the key:
+1. Sign in as the repository owner, **Korridzy**, and open account
+   **Settings -> Developer settings -> Personal access tokens -> Fine-grained
+   tokens -> Generate new token**. Choose an expiration, set **Resource owner**
+   to **Korridzy**, and select **Only select repositories -> sttx**.
+   Grant repository **Contents: read and write**, **Pull requests: read and
+   write**, and **Issues: read and write**; Metadata read access is automatic.
+   No GitHub App registration, client ID, or private key is needed.
+2. Store the PAT in repository **Settings -> Secrets and variables -> Actions
+   -> New repository secret**, named `RELEASE_PLEASE_TOKEN`. Paste the token
+   value, not a filename. Alternatively, use the interactive CLI prompt:
 
    ```bash
-   gh variable set RELEASE_PLEASE_APP_CLIENT_ID --repo Korridzy/sttx --body '<APP_CLIENT_ID>'
-   gh secret set RELEASE_PLEASE_APP_PRIVATE_KEY --repo Korridzy/sttx < /secure/path/release-please.private-key.pem
-   gh variable list --repo Korridzy/sttx
+   gh secret set RELEASE_PLEASE_TOKEN --repo Korridzy/sttx
    gh secret list --repo Korridzy/sttx
    ```
 
-   The initial repository variable and secret inventories were both empty;
-   setup is required, not already verified. The pinned
-   `actions/create-github-app-token` action creates a repository-scoped
-   installation token automatically for each run and revokes it in its
-   post-job step. Do not store a long-lived installation token. The App is
-   deliberate: `GITHUB_TOKEN`-created PRs do not automatically run normal PR CI
-   (current GitHub behavior can require maintainer approval); the App allows
-   the generated PR to trigger CI without that extra approval. Start release
-   uses the same App credentials, requesting only repository Contents write for
-   its tag-creation step. A tag created using `GITHUB_TOKEN` would not trigger the
-   separate push-based release workflow.
-3. Preserve normal branch protections and required checks. An authorized,
-   controlled hosted run must verify App authentication, one release PR,
-   synchronized versions, PR-triggered CI, and no automatic tag/release/publish
-   from the Release Please workflow. Verify the separate manual launcher and
-   its downstream release pipeline when publishing an approved release.
-   Parsed configuration and local tests, including the actual Release Please
-   library against controlled GitHub fixtures, are local evidence only; they
-   do not prove App installation, secret availability, or hosted execution.
+   Replace this secret when rotating the token, before its expiration.
+   Both Release Please and Start release check the authenticated account's
+   numeric ID against the repository owner's ID before writing. Their release
+   PRs are authored by **Korridzy**, not an App bot; the launcher and label
+   cleanup validate that same owner ID as well as the release branch.
+3. Preserve normal branch protections and required checks. The PAT permits
+   generated PRs to trigger normal CI and its tag pushes to trigger the separate
+   Release workflow. `GITHUB_TOKEN`-created PRs can require workflow approval,
+   and its tag pushes do not trigger that push-based release workflow.
+   Read-only launcher validation still uses `GITHUB_TOKEN`, including Actions
+   read access for CI results. Post-publication label cleanup uses its narrowly
+   scoped workflow token; the PAT is not passed to the publication jobs.
+
+An authorized, controlled hosted run must verify PAT authentication, one release
+PR, synchronized versions, PR-triggered CI, and no automatic tag/release/publish
+from the Release Please workflow. For a nonpublishing smoke test, merge the
+implementation with a releasable `feat:` squash title, check the proposed release
+PR and its CI, then leave that PR open without running Start release. A `ci:` or
+`chore:` squash title alone intentionally produces no release PR.
+
+Verify the separate manual launcher and its downstream pipeline when publishing
+an approved release. Parsed configuration and local tests, including controlled
+GitHub fixtures, are local evidence only; they do not prove PAT availability,
+permissions, or hosted execution.
 
 ### Reviewed release PR to maintainer publication
 
@@ -490,18 +492,21 @@ change becomes `0.2.0`. After 1.0, breaking changes bump the major version.
    requires working `unshare`. Cross-interpreter identity or behavior drift must
    be resolved, not bypassed.
 3. Require the unchanged Python 3.11-3.13 `test` matrix, `backend-compat`, and
-   stable `checks` job on the bot PR. Review and merge to `main` only when green
-   under normal protections. The App has no bypass and there is no auto-merge.
+   stable `checks` job on the release PR. Review and merge to `main` only when
+   green under normal protections. There is no automatic merge or protection
+   bypass.
 4. Wait for the merged commit's push-to-`main` CI run to succeed. Open
    **Actions -> Start release -> Run workflow**, select **main**, and enter the
    merged Release Please PR number. The workflow must first be merged into the
    default branch for the button to appear. No local tag commands are needed.
 
-   The launcher accepts only a merged, repository-local bot release PR targeting
-   `main` with `autorelease: pending`. It checks out that exact merge commit,
+   The launcher accepts only a merged, repository-local release PR authored by
+   the repository owner, targeting `main` with `autorelease: pending`. It checks
+   out that exact merge commit,
    requires it to remain in main's history, verifies matching package and manifest
    versions, rejects an existing tag, and requires successful main CI for that
-   exact commit. Only then does it obtain an App token and create `v<version>`.
+   exact commit. Only then does it authenticate the owner's PAT and create
+   `v<version>`.
    Concurrent launches are serialized; tag creation never replaces an existing
    ref. Its run summary links to the separate Release workflow.
 

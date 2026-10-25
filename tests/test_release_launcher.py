@@ -31,21 +31,32 @@ def test_start_release_has_only_a_main_scoped_manual_entry() -> None:
     assert list(jobs) == ["start-release"]
     assert mapping(jobs["start-release"])["if"] == "github.ref == 'refs/heads/main'"
     items = steps("start-release", "start-release")
-    assert list(items) == ["release-pr", "checkout", "validate", "app-token", "tag"]
+    assert list(items) == ["release-pr", "checkout", "validate", "tag"]
     assert all("continue-on-error" not in item and "if" not in item for item in items.values())
     assert items["checkout"]["uses"] == CHECKOUT_ACTION
     assert items["checkout"]["with"] == {
         "ref": "${{ steps.release-pr.outputs.sha }}", "fetch-depth": "0", "persist-credentials": "false"}
-    token = items["app-token"]
-    assert token["uses"] == "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
-    assert token["with"] == {
-        "client-id": "${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}",
-        "private-key": "${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}",
-        "owner": "${{ github.repository_owner }}", "repositories": "${{ github.event.repository.name }}",
-        "permission-contents": "write",
-    }
-    assert mapping(items["tag"]["env"])["GH_TOKEN"] == "${{ steps.app-token.outputs.token }}"
+    assert mapping(items["tag"]["env"])["GH_TOKEN"] == "${{ secrets.RELEASE_PLEASE_TOKEN }}"
+    for name in ("release-pr", "validate"):
+        assert mapping(items[name]["env"])["GH_TOKEN"] == "${{ github.token }}"
     assert mapping(items["release-pr"]["env"])["RELEASE_PR"] == "${{ inputs.release-pr }}"
+
+
+def test_release_pat_authenticates_as_the_repository_owner(sandbox: ReleaseSandbox) -> None:
+    result = sandbox.run((steps("release-please", "release-please")["token"]["run"],))
+    assert result.returncode == 0, result.stderr
+    assert sandbox.requests() == ["api user --jq .id"]
+
+
+@pytest.mark.parametrize(("variable", "value"), [
+    ("GH_TOKEN", ""), ("TOKEN_OWNER_ID", "99"), ("FAIL_REQUEST", "api user"),
+])
+def test_release_pat_rejects_missing_or_invalid_credentials(
+    sandbox: ReleaseSandbox, variable: str, value: str,
+) -> None:
+    scenario = replace(sandbox, environment={**sandbox.environment, variable: value})
+    assert scenario.run((steps("release-please", "release-please")["token"]["run"],)).returncode != 0
+    assert not any("--method POST" in request for request in sandbox.requests())
 
 
 def test_start_release_tags_exactly_the_reviewed_commit(sandbox: ReleaseSandbox) -> None:
@@ -60,7 +71,7 @@ def test_start_release_tags_exactly_the_reviewed_commit(sandbox: ReleaseSandbox)
 
 @pytest.mark.parametrize("change", [
     ".merged = false", '.base.ref = "feature"', '.base.repo.full_name = "other/repo"',
-    '.head.repo.full_name = "other/repo"', '.head.ref = "feature"', '.user.type = "User"',
+    '.head.repo.full_name = "other/repo"', '.head.ref = "feature"', ".user.id = 99", ".user.id = null",
     ".labels = []", '.merge_commit_sha = "not-a-sha"',
     '.merge_commit_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
 ])
@@ -120,10 +131,19 @@ def test_start_release_does_not_reuse_a_tag(sandbox: ReleaseSandbox) -> None:
     assert not any("--method POST" in request for request in sandbox.requests())
 
 
-@pytest.mark.parametrize("endpoint", ["/pulls/41", "/actions/workflows/ci.yml/runs", "/git/refs"])
+@pytest.mark.parametrize("endpoint", ["/pulls/41", "/actions/workflows/ci.yml/runs", "api user", "/git/refs"])
 def test_start_release_propagates_api_failures(sandbox: ReleaseSandbox, endpoint: str) -> None:
     scenario = replace(sandbox, environment={**sandbox.environment, "FAIL_REQUEST": endpoint})
     assert scenario.run(START).returncode != 0
+
+
+@pytest.mark.parametrize(("variable", "value"), [("GH_TOKEN", ""), ("TOKEN_OWNER_ID", "99")])
+def test_start_release_requires_the_owner_pat_before_tagging(
+    sandbox: ReleaseSandbox, variable: str, value: str,
+) -> None:
+    scenario = replace(sandbox, environment={**sandbox.environment, variable: value})
+    assert scenario.run(START).returncode != 0
+    assert not any("--method POST" in request for request in sandbox.requests())
 
 
 def test_release_labels_require_successful_publication() -> None:
@@ -145,7 +165,7 @@ def test_release_labels_clear_pending_only_after_tagged_is_added(sandbox: Releas
 @pytest.mark.parametrize("change", [
     ".[1] = []", '.[1][0].merge_commit_sha = "wrong"', '.[1][0].base.ref = "feature"',
     '.[1][0].head.ref = "feature"', '.[1][0].head.repo.full_name = "other/repo"',
-    ".[1][0].merged_at = null", '.[1][0].user.type = "User"',
+    ".[1][0].merged_at = null", ".[1][0].user.id = 99", ".[1][0].user.id = null",
 ])
 def test_release_labels_leave_unrelated_prs_untouched(sandbox: ReleaseSandbox, change: str) -> None:
     scenario = replace(sandbox, environment={**sandbox.environment, "PULLS_FILTER": change})
