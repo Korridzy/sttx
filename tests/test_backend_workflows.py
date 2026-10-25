@@ -196,7 +196,7 @@ def test_release_chain_and_exact_artifact() -> None:
     assert release["on"] == {"push": {"tags": ["v*"]}}
     assert release["permissions"] == {"contents": "read"}
     jobs = mapping(release["jobs"])
-    assert list(jobs) == ["build", "qualify", "publish", "github-release"]
+    assert list(jobs) == ["build", "qualify", "publish", "github-release", "release-labels"]
     for job, parent in (("qualify", "build"), ("publish", "qualify"), ("github-release", "publish")):
         current = mapping(jobs[job])
         assert current["needs"] == [parent]

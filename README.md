@@ -412,7 +412,10 @@ local qualification.
 
 Release Please only opens or updates one release PR against `main`, containing
 the proposed version and changelog. It does not create tags, GitHub releases,
-or PyPI publications. The reviewed baseline
+or PyPI publications. A maintainer separately starts the
+[Start release workflow](.github/workflows/start-release.yml) to tag an approved,
+merged release PR; the existing release pipeline handles publication. The reviewed
+baseline
 `cb158c19149795d5a98cb3e83bf2c0f8c9a3024a` is both `bootstrap-sha` and the
 temporary `last-release-sha`, with manifest version `0.1.3`. Together they
 prevent historical changelog regeneration: the existing `v0.1.3` tag is outside
@@ -449,10 +452,15 @@ Before enabling the workflow, a repository administrator must:
    post-job step. Do not store a long-lived installation token. The App is
    deliberate: `GITHUB_TOKEN`-created PRs do not automatically run normal PR CI
    (current GitHub behavior can require maintainer approval); the App allows
-   the generated PR to trigger CI without that extra approval.
+   the generated PR to trigger CI without that extra approval. Start release
+   uses the same App credentials, requesting only repository Contents write for
+   its tag-creation step. A tag created using `GITHUB_TOKEN` would not trigger the
+   separate push-based release workflow.
 3. Preserve normal branch protections and required checks. An authorized,
    controlled hosted run must verify App authentication, one release PR,
-   synchronized versions, PR-triggered CI, and no automatic tag/release/publish.
+   synchronized versions, PR-triggered CI, and no automatic tag/release/publish
+   from the Release Please workflow. Verify the separate manual launcher and
+   its downstream release pipeline when publishing an approved release.
    Parsed configuration and local tests, including the actual Release Please
    library against controlled GitHub fixtures, are local evidence only; they
    do not prove App installation, secret availability, or hosted execution.
@@ -484,46 +492,39 @@ change becomes `0.2.0`. After 1.0, breaking changes bump the major version.
 3. Require the unchanged Python 3.11-3.13 `test` matrix, `backend-compat`, and
    stable `checks` job on the bot PR. Review and merge to `main` only when green
    under normal protections. The App has no bypass and there is no auto-merge.
-4. A maintainer, not Release Please, verifies the merged commit on `main`,
-   checks the version is new, then tags that exact commit. From a clean
-   checkout, replace `<release-pr-merge-sha>` with the reviewed merge SHA:
+4. Wait for the merged commit's push-to-`main` CI run to succeed. Open
+   **Actions -> Start release -> Run workflow**, select **main**, and enter the
+   merged Release Please PR number. The workflow must first be merged into the
+   default branch for the button to appear. No local tag commands are needed.
 
-   ```bash
-   set -eu
-   git fetch origin main --tags
-   git switch main
-   git pull --ff-only origin main
-   test -z "$(git status --porcelain)"
-   MERGE_SHA='<release-pr-merge-sha>'
-   test "$(git rev-parse HEAD)" = "$MERGE_SHA"
-   VERSION=$(poetry version --short)
-   ! git rev-parse --verify --quiet "refs/tags/v$VERSION"
-   git tag "v$VERSION" "$MERGE_SHA"
-   git push origin "v$VERSION"
-   ```
+   The launcher accepts only a merged, repository-local bot release PR targeting
+   `main` with `autorelease: pending`. It checks out that exact merge commit,
+   requires it to remain in main's history, verifies matching package and manifest
+   versions, rejects an existing tag, and requires successful main CI for that
+   exact commit. Only then does it obtain an App token and create `v<version>`.
+   Concurrent launches are serialized; tag creation never replaces an existing
+   ref. Its run summary links to the separate Release workflow.
 
-   Stop if any check fails. Never retag `v0.1.3`, reuse a published version,
+   If CI is still running or a validation fails, resolve that condition before
+   running Start release again. Never retag `v0.1.3`, reuse a published version,
    or publish from a feature branch. PyPI does not permit version reuse;
    a replacement publication needs a new reviewed version and new tag.
 5. Monitor the existing `build -> qualify -> publish -> github-release` workflow.
    It qualifies and publishes the same built distributions, with no rebuild.
    A failed qualification blocks publication; environment approvals and normal
    release protections still apply.
-6. Only after successful maintainer publication and its GitHub release, clear
-   `autorelease: pending` from that merged release PR and apply
-   `autorelease: tagged`. Release Please otherwise blocks new PRs while a
-   merged release PR is pending; its release-creation phase is intentionally
-   disabled here, so it cannot perform this label transition itself:
+6. After successful PyPI publication and GitHub release creation, the separate
+   `release-labels` job finds the merged release PR for the tagged commit, adds
+   `autorelease: tagged`, then removes `autorelease: pending`. Other labels are
+   preserved. Release Please otherwise blocks subsequent release PRs while a
+   merged release PR is pending; its own release-creation phase remains disabled.
 
-   ```bash
-   RELEASE_PR='<release-pr-number>'
-   gh pr edit "$RELEASE_PR" --repo Korridzy/sttx --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'
-   ```
-
-   Do not clear pending merely because the PR merged or a tag was pushed.
-   On failure, retain it while investigating publication. Label cleanup alone
-   does not trigger this workflow; run Release Please manually after cleanup,
-   or let the next push to `main` trigger it.
+   If only label cleanup fails, rerun that failed job rather than retagging or
+   republishing. The cleanup can be retried without repeating publication.
+   Failed publication leaves pending in place. Legacy tags without an associated
+   Release Please PR need no label update. Label cleanup alone does not trigger
+   Release Please; run it manually afterward, or let the next push to `main`
+   trigger it.
 
 ## Attribution and licensing
 

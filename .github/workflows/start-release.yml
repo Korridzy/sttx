@@ -1,0 +1,95 @@
+name: Start release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-pr:
+        description: Merged Release Please PR number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: start-release
+  cancel-in-progress: false
+
+jobs:
+  start-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: release-pr
+        name: Resolve merged release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ inputs.release-pr }}
+        run: |
+          [[ "$RELEASE_PR" =~ ^[1-9][0-9]*$ ]]
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$RELEASE_PR")
+          sha=$(jq -er --arg repo "$GITHUB_REPOSITORY" '
+            select(.merged == true and .base.ref == "main"
+              and .base.repo.full_name == $repo and .head.repo.full_name == $repo
+              and .head.ref == "release-please--branches--main" and .user.type == "Bot"
+              and any(.labels[]; .name == "autorelease: pending"))
+            | .merge_commit_sha | select(test("^[0-9a-f]{40}$"))
+          ' <<< "$pr")
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.release-pr.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Poetry
+        run: pipx install poetry==2.4.1
+      - id: validate
+        name: Verify main ancestry, version, and CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release-pr.outputs.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+          version=$(poetry version --short)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          jq -e --arg version "$version" '.["."] == $version' .release-please-manifest.json
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
+            printf '%s\n' "Tag v$version already exists." >&2
+            exit 1
+          fi
+          runs=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$RELEASE_SHA" -f event=push -f branch=main -f per_page=1)
+          jq -e --arg sha "$RELEASE_SHA" '
+            .workflow_runs | length == 1 and
+            (.[0] | .head_sha == $sha and .head_branch == "main" and .event == "push"
+              and .status == "completed" and .conclusion == "success")
+          ' <<< "$runs"
+          printf 'tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - id: tag
+        name: Start the existing release pipeline
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_SHA: ${{ steps.release-pr.outputs.sha }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+          RELEASE_PR: ${{ inputs.release-pr }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA"
+          printf 'Started `%s` from PR #%s at `%s`. Follow [Release](%s/%s/actions/workflows/release.yml).\n' \
+            "$RELEASE_TAG" "$RELEASE_PR" "$RELEASE_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" \
+            >> "$GITHUB_STEP_SUMMARY"

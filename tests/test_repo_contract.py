@@ -46,6 +46,7 @@ AUTOMATION_FILES: Final = frozenset(
         ".release-please-manifest.json",
         "CHANGELOG.md",
         ".github/workflows/release-please.yml",
+        ".github/workflows/start-release.yml",
     }
 )
 REQUIRED_FILES = frozenset(
@@ -151,6 +152,7 @@ def test_repository_layout_matches_the_approved_boundary() -> None:
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
         ".github/workflows/release-please.yml",
+        ".github/workflows/start-release.yml",
     }
 
 
