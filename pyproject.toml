@@ -10,9 +10,9 @@ authors = [
 ]
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "sherpa-onnx==1.13.8",
-    "sherpa-onnx-bin==1.13.8",
-    "huggingface-hub==2.1.1",
+    "sherpa-onnx==2.0.1",
+    "sherpa-onnx-bin==2.0.1",
+    "huggingface-hub==2.3.0",
     "numpy==2.4.6",
 ]
 keywords = ["speech-to-text", "transcription", "asr", "sherpa-onnx", "parakeet", "cli", "offline"]
