@@ -16,13 +16,13 @@ gh() {
   printf '%s\n' "$*" >> "$API_CALLS"
   if [[ -n "$FAIL_REQUEST" && "$*" == *"$FAIL_REQUEST"* ]]; then return 1; fi
   case "$*" in
-    "api user --jq .id")
-      printf '%s\n' "$TOKEN_OWNER_ID" ;;
     "api repos/Korridzy/sttx/pulls/41")
       printf '%s\n' "$PR_JSON" | jq "$PR_FILTER" ;;
     "api --method GET repos/Korridzy/sttx/actions/workflows/ci.yml/runs -f head_sha=$EXPECTED_SHA -f event=push -f branch=main -f per_page=1")
       printf '%s\n' "$RUNS_JSON" | jq "$RUNS_FILTER" ;;
     "api --method POST repos/Korridzy/sttx/git/refs -f ref=refs/tags/v0.2.0 -f sha=$EXPECTED_SHA")
+      printf '{}\n' ;;
+    "api --method POST repos/Korridzy/sttx/actions/workflows/release.yml/dispatches -f ref=refs/tags/v0.2.0")
       printf '{}\n' ;;
     "api repos/Korridzy/sttx/commits/$EXPECTED_SHA/pulls --paginate --slurp")
       printf '%s\n' "$PULLS_JSON" | jq "$PULLS_FILTER" ;;
@@ -77,14 +77,16 @@ def release_sandbox(root: Path) -> ReleaseSandbox:
         "number": 41, "merged": True, "merged_at": "2026-10-22T00:00:00Z", "merge_commit_sha": sha,
         "base": {"ref": "main", "repo": {"full_name": "Korridzy/sttx"}},
         "head": {"ref": "release-please--branches--main", "repo": {"full_name": "Korridzy/sttx"}},
-        "user": {"type": "User", "id": 7}, "labels": [{"name": "autorelease: pending"}, {"name": "keep"}],
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "labels": [{"name": "autorelease: pending"}, {"name": "keep"}],
     }
     runs = {"workflow_runs": [
         {"head_sha": sha, "head_branch": "main", "event": "push", "status": "completed", "conclusion": "success"}
     ]}
     return ReleaseSandbox(root, {
         "GITHUB_REPOSITORY": "Korridzy/sttx", "GITHUB_SERVER_URL": "https://github.com",
-        "GITHUB_REPOSITORY_OWNER_ID": "7", "TOKEN_OWNER_ID": "7",
+        "GITHUB_REPOSITORY_OWNER_ID": "7", "GITHUB_ACTOR_ID": "7",
+        "GITHUB_REPOSITORY_OWNER": "Korridzy", "GITHUB_TRIGGERING_ACTOR": "Korridzy",
         "GITHUB_SHA": sha, "GITHUB_OUTPUT": str(root / "outputs"),
         "GITHUB_STEP_SUMMARY": str(root / "summary"), "GH_TOKEN": "fixture",
         "RELEASE_PR": "41", "RELEASE_SHA": "", "RELEASE_TAG": "", "EXPECTED_SHA": sha,

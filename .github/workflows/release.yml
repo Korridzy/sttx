@@ -3,9 +3,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -25,7 +30,7 @@ jobs:
           python-version: "3.13"
       - id: tag
         name: Verify release tag matches package version
-        run: test "$GITHUB_REF_NAME" = "v$(poetry version --short)"
+        run: test "$GITHUB_REF" = "refs/tags/v$(poetry version --short)"
       - id: build
         name: Build distributions
         run: poetry build
@@ -209,12 +214,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --paginate --slurp)
-          matches=$(jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" \
-            --arg owner_id "$GITHUB_REPOSITORY_OWNER_ID" '
+          matches=$(jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
             [.[][] | select(.merged_at != null and .merge_commit_sha == $sha
               and .base.ref == "main" and .base.repo.full_name == $repo
               and .head.repo.full_name == $repo
-              and .head.ref == "release-please--branches--main" and (.user.id | tostring) == $owner_id)]
+              and .head.ref == "release-please--branches--main"
+              and .user.type == "Bot" and .user.login == "github-actions[bot]")]
           ' <<< "$prs")
           count=$(jq 'length' <<< "$matches")
           if [[ "$count" == 0 ]]; then
