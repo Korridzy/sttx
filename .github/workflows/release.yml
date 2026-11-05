@@ -193,3 +193,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --repo "$GITHUB_REPOSITORY"
+  release-labels:
+    name: Complete release PR
+    needs: [github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    steps:
+      - id: labels
+        name: Mark the published release PR as tagged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --paginate --slurp)
+          matches=$(jq -c --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" \
+            --arg owner_id "$GITHUB_REPOSITORY_OWNER_ID" '
+            [.[][] | select(.merged_at != null and .merge_commit_sha == $sha
+              and .base.ref == "main" and .base.repo.full_name == $repo
+              and .head.repo.full_name == $repo
+              and .head.ref == "release-please--branches--main" and (.user.id | tostring) == $owner_id)]
+          ' <<< "$prs")
+          count=$(jq 'length' <<< "$matches")
+          if [[ "$count" == 0 ]]; then
+            printf '%s\n' 'No merged Release Please PR for this tag.'
+            exit 0
+          fi
+          test "$count" = 1
+          number=$(jq -er '.[0].number' <<< "$matches")
+          gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$number/labels" \
+            -f 'labels[]=autorelease: tagged'
+          if jq -e 'any(.[0].labels[]; .name == "autorelease: pending")' <<< "$matches"; then
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/issues/$number/labels/autorelease%3A%20pending"
+          fi

@@ -12,6 +12,8 @@ from typing import Final
 import pytest
 import yaml
 
+from sttx import __version__
+
 ROOT: Final = Path(__file__).resolve().parents[1]
 SLOW: Final = "steps.detect.outputs.needs_qualification == 'true'"
 ALWAYS: Final = f"always() && {SLOW}"
@@ -194,7 +196,7 @@ def test_release_chain_and_exact_artifact() -> None:
     assert release["on"] == {"push": {"tags": ["v*"]}}
     assert release["permissions"] == {"contents": "read"}
     jobs = mapping(release["jobs"])
-    assert list(jobs) == ["build", "qualify", "publish", "github-release"]
+    assert list(jobs) == ["build", "qualify", "publish", "github-release", "release-labels"]
     for job, parent in (("qualify", "build"), ("publish", "qualify"), ("github-release", "publish")):
         current = mapping(jobs[job])
         assert current["needs"] == [parent]
@@ -258,11 +260,85 @@ def test_release_qualification_boundaries() -> None:
     assert 'Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())' in install[6]
 
 
-@pytest.mark.parametrize("tag", ["v0.1.3", "v0.1.1", "0.1.1", "vv0.1.1"])
+@pytest.mark.parametrize("tag", [f"v{__version__}", "v0.1.1", "0.1.1", "vv0.1.1"])
 def test_release_tag_shell(tag: str) -> None:
     script = steps("build", "release")["tag"]["run"]
-    result = shell('poetry() { printf "0.1.3\\n"; };\n' + str(script), {"GITHUB_REF_NAME": tag})
-    assert (result.returncode == 0) == (tag == "v0.1.3")
+    result = shell(f'poetry() {{ printf "{__version__}\\n"; }};\n' + str(script), {"GITHUB_REF_NAME": tag})
+    assert (result.returncode == 0) == (tag == f"v{__version__}")
+
+
+def test_release_please_manifest_contract() -> None:
+    baseline = "cb158c19149795d5a98cb3e83bf2c0f8c9a3024a"
+
+    assert json.loads((ROOT / ".release-please-manifest.json").read_text()) == {".": __version__}
+    assert json.loads((ROOT / "release-please-config.json").read_text()) == {
+        "bootstrap-sha": baseline,
+        "last-release-sha": baseline,
+        "packages": {
+            ".": {
+                "release-type": "python",
+                "include-component-in-tag": False,
+                "include-v-in-tag": True,
+                "skip-github-release": True,
+                "bump-minor-pre-major": True,
+                "bump-patch-for-minor-pre-major": False,
+                "changelog-sections": [
+                    {"type": "feat", "section": "Features"},
+                    {"type": "fix", "section": "Bug Fixes"},
+                    {"type": "perf", "section": "Performance Improvements"},
+                    {"type": "deps", "section": "Dependencies"},
+                    {"type": "revert", "section": "Reverts"},
+                    {"type": "docs", "section": "Documentation", "hidden": True},
+                    {"type": "style", "section": "Styles", "hidden": True},
+                    {"type": "chore", "section": "Miscellaneous Chores", "hidden": True},
+                    {"type": "refactor", "section": "Code Refactoring", "hidden": True},
+                    {"type": "test", "section": "Tests", "hidden": True},
+                    {"type": "build", "section": "Build System", "hidden": True},
+                    {"type": "ci", "section": "Continuous Integration", "hidden": True},
+                ],
+                "extra-files": ["README.md", "tests/test_packaging.py"],
+            }
+        },
+    }
+    # Python owns pyproject.toml and src/sttx/__init__.py; generic extras only
+    # update marked examples and exact packaging assertions.
+    for filename in ("README.md", "tests/test_packaging.py"):
+        assert "x-release-please-version" in (ROOT / filename).read_text()
+
+
+def test_release_please_workflow_is_scoped_to_main_prs() -> None:
+    release = workflow("release-please")
+
+    assert release["on"] == {"push": {"branches": ["main"]}, "workflow_dispatch": ""}
+    assert release["permissions"] == {}
+    assert release["concurrency"] == {"group": "release-please-main", "cancel-in-progress": "false"}
+    jobs = mapping(release["jobs"])
+    assert list(jobs) == ["release-please"]
+    job = mapping(jobs["release-please"])
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert job["runs-on"] == "ubuntu-latest"
+    assert "permissions" not in job
+    items = job["steps"]
+    assert isinstance(items, list)
+    # Exact steps prohibit added merge, tag, release, or publication commands.
+    assert [{key: value for key, value in mapping(item).items() if key != "name"} for item in items] == [
+        {
+            "id": "token",
+            "shell": "bash",
+            "env": {"GH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN }}"},
+            "run": 'test -n "$GH_TOKEN"\nactor=$(gh api user --jq .id)\ntest "$actor" = "$GITHUB_REPOSITORY_OWNER_ID"\n',
+        },
+        {
+            "uses": "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
+            "with": {
+                "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+                "target-branch": "main",
+                "config-file": "release-please-config.json",
+                "manifest-file": ".release-please-manifest.json",
+                "skip-github-release": "true",
+            },
+        },
+    ]
 
 
 @pytest.mark.parametrize("failed", ["", *GATES, *UPLOADS, "venv", "executable", "fingerprint", "missing"])

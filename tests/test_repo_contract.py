@@ -40,6 +40,15 @@ BACKEND_FILES: Final = frozenset(
 )
 
 REPOSITORY = Path(__file__).parents[1]
+AUTOMATION_FILES: Final = frozenset(
+    {
+        "release-please-config.json",
+        ".release-please-manifest.json",
+        "CHANGELOG.md",
+        ".github/workflows/release-please.yml",
+        ".github/workflows/start-release.yml",
+    }
+)
 REQUIRED_FILES = frozenset(
     {
         ".gitignore",
@@ -84,7 +93,7 @@ REQUIRED_FILES = frozenset(
         "tests/integration/test_qualification_lifecycle.py",
         "tests/integration/qualified_backend.json",
     }
-)
+) | AUTOMATION_FILES
 FORBIDDEN_PREFIXES = (
     "deploy/",
     "deployment/",
@@ -138,6 +147,13 @@ def test_repository_layout_matches_the_approved_boundary() -> None:
         or ".egg-info/" in path
     )
     assert not forbidden, forbidden
+    assert {path for path in tracked if path.startswith(".github/")} == {
+        ".github/dependabot.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        ".github/workflows/release-please.yml",
+        ".github/workflows/start-release.yml",
+    }
 
 
 def test_required_inventory_when_backend_policy_is_shipped() -> None:
@@ -146,7 +162,7 @@ def test_required_inventory_when_backend_policy_is_shipped() -> None:
     assert BACKEND_FILES <= required
 
 
-@pytest.mark.parametrize("omitted", [None, *sorted(BACKEND_FILES)])
+@pytest.mark.parametrize("omitted", [None, *sorted(BACKEND_FILES | AUTOMATION_FILES)])
 def test_layout_when_backend_path_is_untracked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omitted: str | None,
 ) -> None:
