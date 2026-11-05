@@ -21,6 +21,9 @@ jobs:
   start-release:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.release-pr.outputs.sha }}
+      tag: ${{ steps.validate.outputs.tag }}
     defaults:
       run:
         shell: bash
@@ -31,12 +34,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_PR: ${{ inputs.release-pr }}
         run: |
+          test "$GITHUB_ACTOR_ID" = "$GITHUB_REPOSITORY_OWNER_ID"
+          test "$GITHUB_TRIGGERING_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
           [[ "$RELEASE_PR" =~ ^[1-9][0-9]*$ ]]
           pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$RELEASE_PR")
-          sha=$(jq -er --arg repo "$GITHUB_REPOSITORY" --arg owner_id "$GITHUB_REPOSITORY_OWNER_ID" '
+          sha=$(jq -er --arg repo "$GITHUB_REPOSITORY" '
             select(.merged == true and .base.ref == "main"
               and .base.repo.full_name == $repo and .head.repo.full_name == $repo
-              and .head.ref == "release-please--branches--main" and (.user.id | tostring) == $owner_id
+              and .head.ref == "release-please--branches--main"
+              and .user.type == "Bot" and .user.login == "github-actions[bot]"
               and any(.labels[]; .name == "autorelease: pending"))
             | .merge_commit_sha | select(test("^[0-9a-f]{40}$"))
           ' <<< "$pr")
@@ -72,19 +78,45 @@ jobs:
               and .status == "completed" and .conclusion == "success")
           ' <<< "$runs"
           printf 'tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
+  tag:
+    needs: [start-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - id: tag
-        name: Start the existing release pipeline
+        name: Create the reviewed release tag
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          RELEASE_SHA: ${{ steps.release-pr.outputs.sha }}
-          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.start-release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.start-release.outputs.tag }}
           RELEASE_PR: ${{ inputs.release-pr }}
         run: |
-          test -n "$GH_TOKEN"
-          actor=$(gh api user --jq .id)
-          test "$actor" = "$GITHUB_REPOSITORY_OWNER_ID"
+          test "$GITHUB_ACTOR_ID" = "$GITHUB_REPOSITORY_OWNER_ID"
+          test "$GITHUB_TRIGGERING_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA"
-          printf 'Started `%s` from PR #%s at `%s`. Follow [Release](%s/%s/actions/workflows/release.yml).\n' \
-            "$RELEASE_TAG" "$RELEASE_PR" "$RELEASE_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" \
+          printf 'Created `%s` from PR #%s at `%s`.\n' "$RELEASE_TAG" "$RELEASE_PR" "$RELEASE_SHA" \
+            >> "$GITHUB_STEP_SUMMARY"
+  dispatch-release:
+    needs: [start-release, tag]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - id: dispatch
+        name: Start the qualified release pipeline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.start-release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.start-release.outputs.tag }}
+        run: |
+          test "$GITHUB_ACTOR_ID" = "$GITHUB_REPOSITORY_OWNER_ID"
+          test "$GITHUB_TRIGGERING_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" \
+            -f ref="refs/tags/$RELEASE_TAG"
+          printf 'Dispatched [Release](%s/%s/actions/workflows/release.yml) for `%s` at `%s`.\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$RELEASE_SHA" \
             >> "$GITHUB_STEP_SUMMARY"

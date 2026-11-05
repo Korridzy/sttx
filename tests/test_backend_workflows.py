@@ -193,7 +193,8 @@ def test_gate_shell_preserves_explicit_output_argument(tmp_path: Path, gate: str
 
 def test_release_chain_and_exact_artifact() -> None:
     release = workflow("release")
-    assert release["on"] == {"push": {"tags": ["v*"]}}
+    assert release["on"] == {"push": {"tags": ["v*"]}, "workflow_dispatch": ""}
+    assert release["concurrency"] == {"group": "release-${{ github.ref }}", "cancel-in-progress": "false"}
     assert release["permissions"] == {"contents": "read"}
     jobs = mapping(release["jobs"])
     assert list(jobs) == ["build", "qualify", "publish", "github-release", "release-labels"]
@@ -212,6 +213,7 @@ def test_release_chain_and_exact_artifact() -> None:
         assert steps(job, "release")["checkout"]["uses"] == CHECKOUT_ACTION
         assert steps(job, "release")["checkout"]["with"] == {"ref": "${{ github.sha }}"}
     build = steps("build", "release")
+    assert "if" not in mapping(jobs["build"])
     assert build["build"]["run"] == "poetry build"
     assert build["dist"]["uses"] == UPLOAD_ACTION
     assert build["dist"]["with"] == {"name": "dist", "path": "dist/", "if-no-files-found": "error"}
@@ -260,11 +262,16 @@ def test_release_qualification_boundaries() -> None:
     assert 'Path(sttx.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())' in install[6]
 
 
-@pytest.mark.parametrize("tag", [f"v{__version__}", "v0.1.1", "0.1.1", "vv0.1.1"])
-def test_release_tag_shell(tag: str) -> None:
+@pytest.mark.parametrize(("ref", "valid"), [
+    (f"refs/tags/v{__version__}", True), (f"refs/heads/v{__version__}", False),
+    (f"v{__version__}", False), ("refs/tags/v0.1.1", False),
+    (f"refs/tags/{__version__}", False), ("refs/heads/main", False),
+])
+def test_release_tag_shell(ref: str, valid: bool) -> None:
     script = steps("build", "release")["tag"]["run"]
-    result = shell(f'poetry() {{ printf "{__version__}\\n"; }};\n' + str(script), {"GITHUB_REF_NAME": tag})
-    assert (result.returncode == 0) == (tag == f"v{__version__}")
+    result = shell(f'poetry() {{ printf "{__version__}\\n"; }};\n' + str(script),
+                   {"GITHUB_REF": ref, "GITHUB_REF_NAME": f"v{__version__}"})
+    assert (result.returncode == 0) == valid
 
 
 def test_release_please_manifest_contract() -> None:
@@ -317,21 +324,15 @@ def test_release_please_workflow_is_scoped_to_main_prs() -> None:
     job = mapping(jobs["release-please"])
     assert job["if"] == "github.ref == 'refs/heads/main'"
     assert job["runs-on"] == "ubuntu-latest"
-    assert "permissions" not in job
+    assert job["permissions"] == {"contents": "write", "pull-requests": "write", "issues": "write"}
     items = job["steps"]
     assert isinstance(items, list)
     # Exact steps prohibit added merge, tag, release, or publication commands.
     assert [{key: value for key, value in mapping(item).items() if key != "name"} for item in items] == [
         {
-            "id": "token",
-            "shell": "bash",
-            "env": {"GH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN }}"},
-            "run": 'test -n "$GH_TOKEN"\nactor=$(gh api user --jq .id)\ntest "$actor" = "$GITHUB_REPOSITORY_OWNER_ID"\n',
-        },
-        {
             "uses": "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
             "with": {
-                "token": "${{ secrets.RELEASE_PLEASE_TOKEN }}",
+                "token": "${{ github.token }}",
                 "target-branch": "main",
                 "config-file": "release-please-config.json",
                 "manifest-file": ".release-please-manifest.json",
