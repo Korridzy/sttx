@@ -80,7 +80,7 @@ sttx [-h] [-o STEM] [-d DIR] [--model-dir DIR] [-ts] [-v] [--debug] [--log-forma
   `elapsed_seconds` fields plus event-specific data such as `stage`,
   `audio_seconds`, `percent`, and `eta_seconds`; use it with `-v` or `--debug`
   for machine-consumable pipeline telemetry.
-- `--version` — print `sttx 0.1.3` and exit. <!-- x-release-please-version -->
+- `--version` — print `sttx 0.1.4` and exit. <!-- x-release-please-version -->
 
 There is no language option: the model reports a language when available and
 the JSON writer falls back to `"auto"`.

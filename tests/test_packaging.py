@@ -15,7 +15,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Keep wheel tags outside the generic updater's semver prerelease match.
-EXPECTED_VERSION = "0.1.3"  # x-release-please-version
+EXPECTED_VERSION = "0.1.4"  # x-release-please-version
 EXPECTED_WHEEL = f"sttx-{EXPECTED_VERSION}-py3-none-any.whl"
 DIST_INFO = f"sttx-{EXPECTED_VERSION}.dist-info"
 EXPECTED_SOURCES = {
